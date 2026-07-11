@@ -6,4 +6,6 @@ Do not commit generated outputs.
 
 `endogenous_bootstrap.py` prints CSV-compatible samples to standard output. Its
 random initialization is the only exogenous target-selection phase; all later
-rewrites use relation-derived candidates.
+rewrites use relation-derived candidates. During a long run it writes sweep
+progress and completion percentage to standard error once per minute, plus a
+final 100% report, so redirected CSV output remains clean.

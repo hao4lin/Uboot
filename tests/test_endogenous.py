@@ -88,3 +88,19 @@ def test_indexed_simulation_matches_reference_rewrites() -> None:
     indexed, _ = simulate(initial, 50, Random(22), sample_every=50)
 
     assert indexed == reference
+
+
+def test_simulation_reports_final_progress() -> None:
+    initial = random_network(10, Random(31))
+    reports: list[tuple[int, int]] = []
+
+    simulate(
+        initial,
+        7,
+        Random(32),
+        sample_every=7,
+        progress=lambda completed, total: reports.append((completed, total)),
+        progress_check_every=3,
+    )
+
+    assert reports == [(3, 7), (6, 7), (7, 7)]

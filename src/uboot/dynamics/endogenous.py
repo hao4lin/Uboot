@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from random import Random
+from typing import Callable
 
 from uboot.kernel.raw_network import SLOT_COUNT, RawNetwork
 from uboot.observables import mutual_pair_count
@@ -23,6 +24,9 @@ class Sample:
     step: int
     mutual_pairs: int
     mutual_slot_density: float
+
+
+ProgressCallback = Callable[[int, int], None]
 
 
 def rewrite_once(network: RawNetwork, rng: Random) -> Rewrite:
@@ -51,6 +55,8 @@ def simulate(
     rng: Random,
     *,
     sample_every: int = 1,
+    progress: ProgressCallback | None = None,
+    progress_check_every: int = 1_024,
 ) -> tuple[RawNetwork, tuple[Sample, ...]]:
     """Run endogenous rewrites and sample mutual connections over normalized time."""
 
@@ -58,11 +64,17 @@ def simulate(
         raise ValueError("steps cannot be negative")
     if sample_every < 1:
         raise ValueError("sample_every must be positive")
+    if progress_check_every < 1:
+        raise ValueError("progress_check_every must be positive")
 
     engine = _EndogenousEngine(initial, rng)
     samples = [_sample(initial, 0)]
     for step in range(1, steps + 1):
         engine.rewrite()
+        if progress is not None and (
+            step % progress_check_every == 0 or step == steps
+        ):
+            progress(step, steps)
         if step % sample_every == 0 or step == steps:
             samples.append(_sample(engine.snapshot(), step))
     return engine.snapshot(), tuple(samples)

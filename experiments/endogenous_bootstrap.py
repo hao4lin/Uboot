@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 from random import Random
+import sys
+from time import monotonic
 
 from uboot.dynamics.endogenous import simulate
 from uboot.kernel import SLOT_COUNT, random_network
@@ -27,7 +29,33 @@ def main() -> None:
     slots = SLOT_COUNT * args.objects
     steps = round(args.sweeps * slots)
     sample_every = max(1, round(args.sample_sweeps * slots))
-    final, samples = simulate(network, steps, rng, sample_every=sample_every)
+    started = monotonic()
+    last_report = started
+
+    def report_progress(completed: int, total: int) -> None:
+        nonlocal last_report
+        now = monotonic()
+        if now - last_report < 60 and completed < total:
+            return
+        percent = 100.0 if total == 0 else 100 * completed / total
+        completed_sweeps = completed / slots
+        print(
+            f"progress: {percent:6.2f}% "
+            f"({completed_sweeps:.6g}/{args.sweeps:.6g} sweeps)",
+            file=sys.stderr,
+            flush=True,
+        )
+        last_report = now
+
+    if steps == 0:
+        report_progress(0, 0)
+    final, samples = simulate(
+        network,
+        steps,
+        rng,
+        sample_every=sample_every,
+        progress=report_progress,
+    )
 
     print("sweep,mutual_pairs,mutual_slot_density")
     for sample in samples:
