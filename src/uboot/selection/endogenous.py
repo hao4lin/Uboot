@@ -3,12 +3,8 @@
 from uboot.kernel.raw_network import RawNetwork
 
 
-def endogenous_candidates(network: RawNetwork, source: int) -> tuple[int, ...]:
-    """Return distinct reverse-neighbors and two-hop forward neighbors.
-
-    Object IDs order the returned tuple only to make seeded runs reproducible. They
-    do not change membership or provide an object-visible relation.
-    """
+def endogenous_candidates(network: RawNetwork, source: int) -> frozenset[int]:
+    """Return distinct reverse-neighbors and two-hop forward neighbors."""
 
     if not 0 <= source < network.size:
         raise IndexError("source object is outside the network")
@@ -24,4 +20,4 @@ def endogenous_candidates(network: RawNetwork, source: int) -> tuple[int, ...]:
         for target in network.targets[neighbor]
         if target != source
     }
-    return tuple(sorted(incoming | two_hop))
+    return frozenset(incoming | two_hop)

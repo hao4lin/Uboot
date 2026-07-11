@@ -22,9 +22,15 @@ After initialization there is no global random target fallback. IDs and slot
 indices are operational handles, not object-visible types. Mutual connection is
 a passive observable and ignores slot-number alignment.
 
-Time is reported in slot sweeps, `steps / (3N)`. The main density observable is
-`2M / (3N)`, where `M` is the number of unordered mutually pointing object
+Time is reported only in steps. One step independently samples one object and
+one of its slots, then attempts at most one rewrite. The main density observable
+is `2M / (3N)`, where `M` is the number of unordered mutually pointing object
 pairs. Neither quantity changes the dynamics.
+
+Ordinary statistics are full-network snapshots taken only at configured stage
+boundaries. Components and simple cycles are computed only at heavier boundaries.
+Creation/destruction turnover and connection lifetimes are deliberately omitted:
+both would require statistics-only bookkeeping on every rewrite.
 
 The initial sequential `FusionPlan.run` is a minimal executable boundary, not a
 claim that the final simulator is fundamentally sequential. It may later be

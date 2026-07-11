@@ -34,7 +34,7 @@ def test_candidates_are_only_incoming_or_two_hop_relations() -> None:
         )
     )
 
-    assert endogenous_candidates(network, 0) == (2,)
+    assert endogenous_candidates(network, 0) == frozenset({2})
 
 
 def test_rewrite_uses_endogenous_candidate_without_mutating_input() -> None:
@@ -53,6 +53,20 @@ def test_rewrite_uses_endogenous_candidate_without_mutating_input() -> None:
     assert result.candidate_count == 1
     assert network.targets[0] == (1, 1, 1)
     assert result.network.targets[0][result.slot] == 2
+
+
+def test_empty_candidate_is_a_no_op(monkeypatch: pytest.MonkeyPatch) -> None:
+    network = random_network(5, Random(3))
+    monkeypatch.setattr(
+        "uboot.dynamics.endogenous.endogenous_candidates",
+        lambda _network, _source: frozenset(),
+    )
+
+    result = rewrite_once(network, Random(4))
+
+    assert result.network is network
+    assert result.target is None
+    assert result.candidate_count == 0
 
 
 def test_mutual_pairs_ignore_slot_labels_and_duplicate_slots() -> None:

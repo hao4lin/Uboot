@@ -20,7 +20,7 @@ derived only from current relations. No legacy source or data was migrated.
 py -m venv .venv
 .venv\Scripts\python -m pip install -e ".[dev]"
 .venv\Scripts\python -m pytest
-.venv\Scripts\python experiments\endogenous_bootstrap.py --objects 1000 --sweeps 100 --seed 0
+.venv\Scripts\python experiments\endogenous_bootstrap.py --N 1000 --max-steps 1000000 --seed 0
 ```
 
 See `docs/architecture.md`, `docs/iboot-contract.md`, and

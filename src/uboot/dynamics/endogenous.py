@@ -15,7 +15,7 @@ class Rewrite:
     source: int
     slot: int
     previous_target: int
-    target: int
+    target: int | None
     candidate_count: int
 
 
@@ -36,8 +36,8 @@ def rewrite_once(network: RawNetwork, rng: Random) -> Rewrite:
     slot = rng.randrange(SLOT_COUNT)
     candidates = endogenous_candidates(network, source)
     if not candidates:
-        raise RuntimeError("endogenous candidate set is empty")
-    target = rng.choice(candidates)
+        return Rewrite(network, source, slot, network.targets[source][slot], None, 0)
+    target = rng.choice(tuple(candidates))
     previous_target = network.targets[source][slot]
     return Rewrite(
         network.retarget(source, slot, target),
@@ -58,7 +58,7 @@ def simulate(
     progress: ProgressCallback | None = None,
     progress_check_every: int = 1_024,
 ) -> tuple[RawNetwork, tuple[Sample, ...]]:
-    """Run endogenous rewrites and sample mutual connections over normalized time."""
+    """Run single-slot steps and sample mutual connections at step intervals."""
 
     if steps < 0:
         raise ValueError("steps cannot be negative")
@@ -67,7 +67,7 @@ def simulate(
     if progress_check_every < 1:
         raise ValueError("progress_check_every must be positive")
 
-    engine = _EndogenousEngine(initial, rng)
+    engine = EndogenousEngine(initial, rng)
     latest_sample = _sample(initial, 0)
     samples = [latest_sample]
     for step in range(1, steps + 1):
@@ -87,7 +87,7 @@ def _sample(network: RawNetwork, step: int) -> Sample:
     return Sample(step, pairs, 2 * pairs / (SLOT_COUNT * network.size))
 
 
-class _EndogenousEngine:
+class EndogenousEngine:
     """Mutable local executor with a reverse index; snapshots remain immutable."""
 
     def __init__(self, network: RawNetwork, rng: Random) -> None:
@@ -99,7 +99,7 @@ class _EndogenousEngine:
                 counts = self.incoming[target]
                 counts[source] = counts.get(source, 0) + 1
 
-    def rewrite(self) -> None:
+    def rewrite(self) -> bool:
         source = self.rng.randrange(len(self.targets))
         slot = self.rng.randrange(SLOT_COUNT)
         candidates = set(self.incoming[source])
@@ -111,12 +111,12 @@ class _EndogenousEngine:
         )
         candidates.discard(source)
         if not candidates:
-            raise RuntimeError("endogenous candidate set is empty")
+            return False
 
-        target = self.rng.choice(sorted(candidates))
+        target = self.rng.choice(tuple(candidates))
         previous = self.targets[source][slot]
         if target == previous:
-            return
+            return False
 
         previous_counts = self.incoming[previous]
         previous_counts[source] -= 1
@@ -125,6 +125,7 @@ class _EndogenousEngine:
         new_counts = self.incoming[target]
         new_counts[source] = new_counts.get(source, 0) + 1
         self.targets[source][slot] = target
+        return True
 
     def snapshot(self) -> RawNetwork:
         return RawNetwork(tuple(tuple(slots) for slots in self.targets))  # type: ignore[arg-type]
