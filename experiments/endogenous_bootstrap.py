@@ -7,8 +7,9 @@ from random import Random
 import sys
 from time import monotonic
 
-from uboot.dynamics.endogenous import simulate
+from uboot.dynamics.endogenous import Sample, simulate
 from uboot.kernel import SLOT_COUNT, random_network
+from uboot.observables import mutual_pair_count
 
 
 def main() -> None:
@@ -32,7 +33,7 @@ def main() -> None:
     started = monotonic()
     last_report = started
 
-    def report_progress(completed: int, total: int) -> None:
+    def report_progress(completed: int, total: int, sample: Sample) -> None:
         nonlocal last_report
         now = monotonic()
         if now - last_report < 60 and completed < total:
@@ -41,14 +42,22 @@ def main() -> None:
         completed_sweeps = completed / slots
         print(
             f"progress: {percent:6.2f}% "
-            f"({completed_sweeps:.6g}/{args.sweeps:.6g} sweeps)",
+            f"({completed_sweeps:.6g}/{args.sweeps:.6g} sweeps) "
+            f"mutual_pairs={sample.mutual_pairs} "
+            f"density={sample.mutual_slot_density:.6g} "
+            f"sample_sweep={sample.step / slots:.6g}",
             file=sys.stderr,
             flush=True,
         )
         last_report = now
 
     if steps == 0:
-        report_progress(0, 0)
+        initial_pairs = mutual_pair_count(network)
+        report_progress(
+            0,
+            0,
+            Sample(0, initial_pairs, 2 * initial_pairs / slots),
+        )
     final, samples = simulate(
         network,
         steps,

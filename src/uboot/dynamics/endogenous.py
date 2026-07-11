@@ -26,7 +26,7 @@ class Sample:
     mutual_slot_density: float
 
 
-ProgressCallback = Callable[[int, int], None]
+ProgressCallback = Callable[[int, int, Sample], None]
 
 
 def rewrite_once(network: RawNetwork, rng: Random) -> Rewrite:
@@ -68,15 +68,17 @@ def simulate(
         raise ValueError("progress_check_every must be positive")
 
     engine = _EndogenousEngine(initial, rng)
-    samples = [_sample(initial, 0)]
+    latest_sample = _sample(initial, 0)
+    samples = [latest_sample]
     for step in range(1, steps + 1):
         engine.rewrite()
+        if step % sample_every == 0 or step == steps:
+            latest_sample = _sample(engine.snapshot(), step)
+            samples.append(latest_sample)
         if progress is not None and (
             step % progress_check_every == 0 or step == steps
         ):
-            progress(step, steps)
-        if step % sample_every == 0 or step == steps:
-            samples.append(_sample(engine.snapshot(), step))
+            progress(step, steps, latest_sample)
     return engine.snapshot(), tuple(samples)
 
 
