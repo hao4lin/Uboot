@@ -10,9 +10,9 @@ retain backward validation paths.
 
 ## Status
 
-This repository currently contains only the clean project skeleton. The legacy
-experiment tree at `C:\Users\cogg\universe` has been inventoried but no source,
-data, report, or artifact has been migrated.
+The first implemented model explores a deliberately narrow transition: a random
+three-slot raw-object network is initialized once, then every rewrite target is
+derived only from current relations. No legacy source or data was migrated.
 
 ## Development
 
@@ -20,6 +20,7 @@ data, report, or artifact has been migrated.
 py -m venv .venv
 .venv\Scripts\python -m pip install -e ".[dev]"
 .venv\Scripts\python -m pytest
+.venv\Scripts\python experiments\endogenous_bootstrap.py --objects 1000 --sweeps 100 --seed 0
 ```
 
 See `docs/architecture.md`, `docs/iboot-contract.md`, and

@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping
 
+from uboot.kernel.raw_network import SLOT_COUNT, RawNetwork, random_network
+
 
 @dataclass(frozen=True, slots=True)
 class Direction:
@@ -30,3 +32,6 @@ class State:
 
     def evolved(self, **changes: Any) -> "State":
         return State({**self.values, **changes})
+
+
+__all__ = ["Direction", "RawNetwork", "SLOT_COUNT", "State", "random_network"]
