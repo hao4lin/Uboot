@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+
+# Generated experiment material
+artifacts/*
+!artifacts/README.md
+*.log
+
+# Local data and environment
+.env
+.env.*
+data/
