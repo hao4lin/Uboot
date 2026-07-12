@@ -19,10 +19,25 @@ def main() -> None:
     args = parser.parse_args()
     runner = Path(__file__).with_name("edge_response.py")
     summaries = []
-    for profile in (f"M{i}" for i in range(7)):
+    profiles = [f"M{i}" for i in range(7)]
+    total_batches = len(profiles) * len(args.sizes) * len(args.seeds)
+    batch_index = 0
+    for profile in profiles:
         for size in args.sizes:
             for seed in args.seeds:
+                batch_index += 1
                 destination = Path(args.output_dir) / profile / f"N{size}_seed{seed}"
+                print(
+                    "\n" + "=" * 78,
+                    f"BATCH {batch_index}/{total_batches} | profile={profile} | "
+                    f"N={size} | seed={seed} | "
+                    f"background_sweeps={args.background_sweeps}",
+                    f"output={destination}",
+                    "=" * 78,
+                    sep="\n",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 subprocess.run([sys.executable, str(runner), "--profile", profile,
                     "--N", str(size), "--seed", str(seed), "--background-sweeps",
                     str(args.background_sweeps), "--output-dir", str(destination)], check=True)

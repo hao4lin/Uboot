@@ -27,6 +27,8 @@ py -m venv .venv
 
 Long edge-response runs report active-slot completion, processed responses, and
 current FIFO length to standard error every 60 seconds, plus final completion.
+Batch runs print a separator before every child experiment with its batch index,
+profile, N, seed, background sweeps, and output directory.
 
 See `docs/architecture.md`, `docs/iboot-contract.md`, and
 `docs/legacy-inventory.md` before adding simulation behavior.
