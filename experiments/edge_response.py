@@ -12,6 +12,7 @@ from time import monotonic
 from typing import Any
 
 from uboot.edge_response import EdgeResponseEngine, distinct_random_network, policy_profile
+from uboot.snapshot_lineage import closed_object_rows, system_snapshot
 
 
 def main() -> None:
@@ -22,6 +23,10 @@ def main() -> None:
     parser.add_argument("--background-sweeps", type=int, default=1_000)
     parser.add_argument("--snapshot-interval-sweeps", type=int, default=100)
     parser.add_argument("--worker-count", type=int, default=1)
+    parser.add_argument("--enable-snapshots", action="store_true")
+    parser.add_argument("--enable-worker-stats", action="store_true")
+    parser.add_argument("--enable-closed-object-snapshots", action="store_true")
+    parser.add_argument("--enable-response-histograms", action="store_true")
     parser.add_argument("--config")
     parser.add_argument("--p-incoming", type=float)
     parser.add_argument("--p-same-slot-given-incoming", type=float)
@@ -43,8 +48,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.snapshot_interval_sweeps < 1:
         parser.error("--snapshot-interval-sweeps must be positive")
-    if args.worker_count < 1:
-        parser.error("--worker-count must be positive")
+    if args.worker_count < 0:
+        parser.error("--worker-count cannot be negative")
     overrides: dict[str, Any] = {}
     if args.config:
         overrides = json.loads(Path(args.config).read_text(encoding="utf-8"))
@@ -81,25 +86,54 @@ def main() -> None:
         policy_profile(args.profile, **overrides),
         rng,
         worker_count=args.worker_count,
+        enable_worker_stats=args.enable_worker_stats,
+        enable_response_histograms=args.enable_response_histograms,
     )
     last_progress = monotonic()
     snapshot_interval = args.snapshot_interval_sweeps * 3 * args.N
     next_snapshot = snapshot_interval
     snapshots: list[dict[str, Any]] = []
+    object_snapshots: list[dict[str, Any]] = []
+    snapshot_id = 0
+    last_snapshot_active = -1
+
+    def capture_snapshot(completed: int) -> None:
+        nonlocal snapshot_id
+        nonlocal last_snapshot_active
+        if completed == last_snapshot_active:
+            return
+        network = engine.snapshot()
+        summary = engine.summary()
+        objects = closed_object_rows(
+            network, snapshot_id, completed / (3 * args.N)
+        )
+        if args.enable_closed_object_snapshots:
+            object_snapshots.extend(objects)
+        if args.enable_snapshots:
+            snapshots.append(
+                system_snapshot(
+                    network,
+                    snapshot_id,
+                    completed / (3 * args.N),
+                    completed,
+                    summary,
+                    objects,
+                    args.worker_count,
+                )
+            )
+        snapshot_id += 1
+        last_snapshot_active = completed
 
     def report_progress(
         completed: int, total: int, responses: int, queue_length: int
     ) -> None:
         nonlocal last_progress
         nonlocal next_snapshot
-        if completed >= next_snapshot or completed == total:
-            snapshots.append(
-                {
-                    "active_attempts": completed,
-                    "background_sweep": completed / (3 * args.N),
-                    **engine.summary(),
-                }
-            )
+        if (
+            (args.enable_snapshots or args.enable_closed_object_snapshots)
+            and (completed >= next_snapshot or completed == total)
+        ):
+            capture_snapshot(completed)
             while next_snapshot <= completed:
                 next_snapshot += snapshot_interval
         now = monotonic()
@@ -116,6 +150,8 @@ def main() -> None:
         )
         last_progress = now
 
+    if args.enable_snapshots or args.enable_closed_object_snapshots:
+        capture_snapshot(0)
     engine.run(args.background_sweeps, report_progress)
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -123,14 +159,16 @@ def main() -> None:
                "background_sweeps": args.background_sweeps, **engine.summary()}
     (output / "edge_response_summary.json").write_text(
         json.dumps(summary, indent=2), encoding="utf-8")
-    with (output / "edge_response_snapshots.csv").open(
-        "w", newline="", encoding="utf-8"
-    ) as handle:
-        if snapshots:
-            fields = sorted({key for row in snapshots for key in row})
-            writer = csv.DictWriter(handle, fieldnames=fields)
-            writer.writeheader()
-            writer.writerows(snapshots)
+    if args.enable_snapshots:
+        _write_rows(output / "system_snapshots.csv", snapshots)
+        _write_rows(output / "edge_response_snapshots.csv", snapshots)
+    if args.enable_closed_object_snapshots:
+        _write_rows(output / "closed_object_snapshots.csv", object_snapshots)
+    if args.enable_worker_stats:
+        _write_rows(
+            output / "response_by_tentacle_summary.csv",
+            engine.response_by_tentacle_rows(),
+        )
     with (output / "edge_response_summary.csv").open(
         "w", newline="", encoding="utf-8"
     ) as handle:
@@ -152,6 +190,17 @@ def main() -> None:
 def _set(mapping: dict[str, Any], key: str, value: Any) -> None:
     if value is not None:
         mapping[key] = value
+
+
+def _write_rows(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        path.write_text("", encoding="utf-8")
+        return
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        fields = sorted({key for row in rows for key in row})
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 if __name__ == "__main__":

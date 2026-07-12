@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 from uboot.kernel import SLOT_COUNT, RawNetwork
 from uboot.observables import mutual_pair_count
+from uboot.snapshot_lineage import histogram_bucket
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +124,7 @@ class ResponseRequest:
 
 @dataclass(slots=True)
 class ThreadState:
+    start_active_slot_count: int = 0
     length: int = 0
     visited_slot_states: set[tuple[int, int, int]] = field(default_factory=set)
     visited_node_slots: set[tuple[int, int]] = field(default_factory=set)
@@ -131,6 +133,8 @@ class ThreadState:
     )
     slot_sequence: list[int] = field(default_factory=list)
     closure: str | None = None
+    initial_object_type: str = "unavailable"
+    initial_external_tentacle_count: int = -1
 
 
 class EdgeResponseEngine:
@@ -140,6 +144,8 @@ class EdgeResponseEngine:
         policy: ExperimentPolicy,
         rng: Random,
         worker_count: int = 1,
+        enable_worker_stats: bool = False,
+        enable_response_histograms: bool = False,
     ):
         if network.size < 4:
             raise ValueError("edge-response experiments require N >= 4")
@@ -156,9 +162,12 @@ class EdgeResponseEngine:
         self.queue: deque[ResponseRequest] = deque()
         self.counters: Counter[str] = Counter()
         self.active_attempts = [[0] * SLOT_COUNT for _ in self.targets]
-        if worker_count < 1:
-            raise ValueError("worker count must be positive")
+        if worker_count < 0:
+            raise ValueError("worker count cannot be negative")
         self.worker_count = worker_count
+        self.enable_worker_stats = enable_worker_stats
+        self.enable_response_histograms = enable_response_histograms
+        self.response_by_tentacle: Counter[tuple[str, str, str, str]] = Counter()
         self.threads: dict[int, ThreadState] = {}
         self.thread_length_histogram: Counter[int] = Counter()
         self._fair_ring: list[tuple[int, int]] = []
@@ -167,7 +176,7 @@ class EdgeResponseEngine:
         self._next_thread = 1
         self.background_sweep = 0
         response = policy.response
-        self.responses_enabled = any(
+        self.responses_enabled = worker_count > 0 and any(
             (
                 response.p_no_return,
                 response.p_same_return,
@@ -263,8 +272,36 @@ class EdgeResponseEngine:
             same_slot_only_thread_count=self.counters["same_slot_only_thread_count"],
             slot_switch_thread_count=self.counters["slot_switch_thread_count"],
             active_worker_count=len(self.threads),
+            mean_response_lifetime=(
+                self.counters["response_lifetime_sweeps_sum"]
+                / max(1, self.counters["responses_completed_aggregate"])
+            ),
         )
         return result
+
+    def response_by_tentacle_rows(self) -> list[dict[str, Any]]:
+        rows = []
+        keys = {key[:3] for key in self.response_by_tentacle}
+        for object_type, bucket, completion in sorted(keys):
+            prefix = (object_type, bucket, completion)
+            count = self.response_by_tentacle[prefix + ("count",)]
+            rows.append(
+                {
+                    "initial_object_type": object_type,
+                    "tentacle_count_bucket": bucket,
+                    "completion_type": completion,
+                    "count": count,
+                    "mean_chain_length": self.response_by_tentacle[
+                        prefix + ("chain_length_sum",)
+                    ]
+                    / count,
+                    "mean_lifetime_sweeps": self.response_by_tentacle[
+                        prefix + ("lifetime_sum",)
+                    ]
+                    / count,
+                }
+            )
+        return rows
 
     def _next_fair_slot(self) -> tuple[int, int]:
         if self._fair_index == len(self._fair_ring):
@@ -335,7 +372,9 @@ class EdgeResponseEngine:
             self._update_thread(event)
         generated = self._maybe_enqueue(event)
         if request is None and generated:
-            self.threads[thread_id] = ThreadState()
+            self.threads[thread_id] = ThreadState(
+                start_active_slot_count=self.counters["active_attempts"]
+            )
             self.counters["thread_count"] += 1
             self._update_thread(event)
         event = replace(
@@ -499,6 +538,35 @@ class EdgeResponseEngine:
         if thread is None:
             return
         self.thread_length_histogram[thread.length] += 1
+        lifetime_sweeps = (
+            self.counters["active_attempts"] - thread.start_active_slot_count
+        ) // (SLOT_COUNT * len(self.targets))
+        if self.enable_response_histograms:
+            self.counters[
+                f"response_chain_length_hist_{histogram_bucket(thread.length)}"
+            ] += 1
+            self.counters[
+                f"response_lifetime_sweeps_hist_{histogram_bucket(lifetime_sweeps)}"
+            ] += 1
+            self.counters[
+                "response_visited_count_hist_"
+                f"{histogram_bucket(len(thread.visited_node_slots))}"
+            ] += 1
+        self.counters["response_lifetime_sweeps_sum"] += lifetime_sweeps
+        self.counters["responses_completed_aggregate"] += 1
+        if self.enable_worker_stats:
+            key = (
+                thread.initial_object_type,
+                (
+                    histogram_bucket(thread.initial_external_tentacle_count)
+                    if thread.initial_external_tentacle_count >= 0
+                    else "unavailable"
+                ),
+                reason,
+            )
+            self.response_by_tentacle[key + ("count",)] += 1
+            self.response_by_tentacle[key + ("chain_length_sum",)] += thread.length
+            self.response_by_tentacle[key + ("lifetime_sum",)] += lifetime_sweeps
         self.counters[f"terminated_{reason}"] += 1
         if thread.closure is not None:
             self.counters["closed_threads"] += 1
