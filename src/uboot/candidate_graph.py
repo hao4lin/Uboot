@@ -54,7 +54,7 @@ class CandidateObject:
     def object_class(self) -> str:
         size = len(self.members)
         if size == 1:
-            return "singleton"
+            return "closed_self_loop" if self.internal_candidate_edges else "candidate_isolated"
         if size == 2:
             return "pair"
         if size == 3:

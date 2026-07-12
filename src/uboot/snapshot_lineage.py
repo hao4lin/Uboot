@@ -80,7 +80,7 @@ def closed_object_rows(
     tick: int,
     *,
     member_inline_limit: int = 32,
-    include_singletons: bool = True,
+    include_singletons: bool = False,
 ) -> list[dict[str, Any]]:
     pairs = same_meaning_mutual_pairs(network)
     rows = []
@@ -130,6 +130,7 @@ def system_snapshot(
     all_sccs = strongly_connected_components(candidate_graph)
     closed = candidate_objects(candidate_graph)
     classes = Counter(item.object_class for item in closed)
+    nontrivial_count = sum(len(item.members) >= 2 for item in closed)
     return {
         "snapshot_id": snapshot_id,
         "tick": tick,
@@ -152,14 +153,16 @@ def system_snapshot(
         "candidate_size_ge3": sum(size >= 3 for size in sizes),
         "candidate_edge_count": sum(sizes),
         "candidate_scc_count": len(all_sccs),
-        "closed_candidate_scc_count": len(closed),
-        "closed_singleton_count": classes["singleton"],
+        "closed_candidate_scc_count": nontrivial_count,
+        "candidate_isolated_count": classes["candidate_isolated"],
+        "closed_self_loop_count": classes["closed_self_loop"],
         "closed_pair_count": classes["pair"],
         "closed_triple_count": classes["triple"],
         "closed_larger_count": classes["larger"],
         "max_candidate_scc_size": max(map(len, all_sccs), default=0),
         "max_closed_candidate_scc_size": max(
-            (len(item.members) for item in closed), default=0
+            (len(item.members) for item in closed if len(item.members) >= 2),
+            default=0,
         ),
         "whole_network_object_present": any(
             len(item.members) == network.size for item in closed
