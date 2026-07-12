@@ -72,11 +72,41 @@ structurally different runs are required before interpreting interval trends.
 - Worker timeout and debug path retention were not added: neither can be added
   as statistics-only behavior without defining scheduler semantics or retaining
   paths.
-- The current scan is a functional N=100 validation, not the requested later
-  N=1000 core comparison.
+- The worker-start object/tentacle context remains unavailable as described
+  above; the N=1000 scan does not change that limitation.
 
 ## Reproduction
 
 ```powershell
 .\.venv\Scripts\python.exe experiments\edge_response_scans.py --N 100 --seed 20260712 --background-sweeps 100 --output-dir artifacts\m1_snapshot_worker_validation
+```
+
+## N=1000 core validation
+
+The complete scan was rerun at N=1000, seed=20260712, 100 sweeps (300,000
+active-slot attempts per condition). All ten conditions completed in 67.4 s.
+
+| workers | mutual density | completed | mean chain | mean lifetime | runtime s |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 0.652667 | 0 | 0 | 0 | 1.578 |
+| 1 | 0.620000 | 74995 | 2.276098 | 0 | 7.610 |
+| 2 | 0.620000 | 74995 | 2.276098 | 0 | 7.297 |
+| 4 | 0.620000 | 74995 | 2.276098 | 0 | 7.578 |
+| 8 | 0.620000 | 74995 | 2.276098 | 0 | 7.015 |
+
+The final enabled-worker snapshot contained 930 mutual node pairs. Worker
+counts 1--8 again produced identical seeded outcomes because response-priority
+processing drains each response chain before returning to active-slot work.
+Worker zero remained a distinct M1 condition and ended at the higher density
+0.652667.
+
+The interval scan again yielded one whole-network closed `other` object per
+snapshot. Intervals 10, 30, 100, 300, and 1000 produced 11, 5, 2, 2, and 2
+snapshots respectively; all adjacent-object matches were unambiguous with a
+primary-match rate of 1.0. Birth, death, split-candidate, and merge-candidate
+rates were all zero. This reflects the whole-network SCC and does not establish
+pair/triple lifetime recovery.
+
+```powershell
+.\.venv\Scripts\python.exe experiments\edge_response_scans.py --N 1000 --seed 20260712 --background-sweeps 100 --output-dir artifacts\m1_snapshot_worker_N1000
 ```
