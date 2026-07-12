@@ -14,3 +14,9 @@ belong under the ignored `artifacts/` tree.
 Heavy snapshots additionally measure candidate-set sizes and closed strongly
 connected components of the candidate graph. These measurements are derived
 entirely from the heavy snapshot and do not alter or instrument each rewrite.
+
+The edge-response M1 experiment uses a bounded discrete-tick worker scheduler.
+Each occupied worker advances at most once before one active-slot update; newly
+created tasks cannot advance until the next tick. Its snapshot candidate graph
+is the exact direct-candidate function used by M1 selection, not the older
+relation-endogenous `IN + OUT2` graph. M0 bypasses this response system.

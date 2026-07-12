@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+from hashlib import sha256
 from pathlib import Path
 from random import Random
 import sys
@@ -12,7 +13,7 @@ from time import monotonic
 from typing import Any
 
 from uboot.edge_response import EdgeResponseEngine, distinct_random_network, policy_profile
-from uboot.snapshot_lineage import closed_object_rows, system_snapshot
+from uboot.snapshot_lineage import closed_object_rows, graph_diagnostics, system_snapshot
 
 
 def main() -> None:
@@ -23,10 +24,16 @@ def main() -> None:
     parser.add_argument("--background-sweeps", type=int, default=1_000)
     parser.add_argument("--snapshot-interval-sweeps", type=int, default=100)
     parser.add_argument("--worker-count", type=int, default=1)
+    parser.add_argument("--response-queue-capacity", type=int, default=1024)
+    parser.add_argument(
+        "--response-queue-policy", choices=["reject", "drop_oldest"], default="reject"
+    )
+    parser.add_argument("--object-member-inline-limit", type=int, default=32)
     parser.add_argument("--enable-snapshots", action="store_true")
     parser.add_argument("--enable-worker-stats", action="store_true")
     parser.add_argument("--enable-closed-object-snapshots", action="store_true")
     parser.add_argument("--enable-response-histograms", action="store_true")
+    parser.add_argument("--enable-graph-diagnostics", action="store_true")
     parser.add_argument("--config")
     parser.add_argument("--p-incoming", type=float)
     parser.add_argument("--p-same-slot-given-incoming", type=float)
@@ -40,9 +47,7 @@ def main() -> None:
     parser.add_argument("--response-slot-mode-multi-return")
     parser.add_argument("--response-target-mode")
     parser.add_argument("--max-chain-depth", type=int)
-    parser.add_argument(
-        "--scheduler-mode", choices=["response_priority", "mixed"]
-    )
+    parser.add_argument("--scheduler-mode", choices=["tick"])
     parser.add_argument("--p-process-response", type=float)
     parser.add_argument("--output-dir", default="artifacts/edge_response")
     args = parser.parse_args()
@@ -50,6 +55,8 @@ def main() -> None:
         parser.error("--snapshot-interval-sweeps must be positive")
     if args.worker_count < 0:
         parser.error("--worker-count cannot be negative")
+    if args.profile != "M0" and args.worker_count < 1:
+        parser.error("M1-family modes require --worker-count >= 1")
     overrides: dict[str, Any] = {}
     if args.config:
         overrides = json.loads(Path(args.config).read_text(encoding="utf-8"))
@@ -86,14 +93,18 @@ def main() -> None:
         policy_profile(args.profile, **overrides),
         rng,
         worker_count=args.worker_count,
+        response_queue_capacity=args.response_queue_capacity,
+        response_queue_policy=args.response_queue_policy,
         enable_worker_stats=args.enable_worker_stats,
         enable_response_histograms=args.enable_response_histograms,
+        mode="M0" if args.profile == "M0" else "M1",
     )
     last_progress = monotonic()
     snapshot_interval = args.snapshot_interval_sweeps * 3 * args.N
     next_snapshot = snapshot_interval
     snapshots: list[dict[str, Any]] = []
     object_snapshots: list[dict[str, Any]] = []
+    diagnostic_snapshots: list[dict[str, Any]] = []
     snapshot_id = 0
     last_snapshot_active = -1
 
@@ -104,8 +115,13 @@ def main() -> None:
             return
         network = engine.snapshot()
         summary = engine.summary()
+        candidate_graph = engine.candidate_graph()
         objects = closed_object_rows(
-            network, snapshot_id, completed / (3 * args.N)
+            network,
+            candidate_graph,
+            snapshot_id,
+            completed,
+            member_inline_limit=args.object_member_inline_limit,
         )
         if args.enable_closed_object_snapshots:
             object_snapshots.extend(objects)
@@ -113,13 +129,20 @@ def main() -> None:
             snapshots.append(
                 system_snapshot(
                     network,
+                    candidate_graph,
                     snapshot_id,
-                    completed / (3 * args.N),
                     completed,
                     summary,
                     objects,
-                    args.worker_count,
                 )
+            )
+        if args.enable_graph_diagnostics:
+            diagnostic_snapshots.append(
+                {
+                    "snapshot_id": snapshot_id,
+                    "tick": completed,
+                    **graph_diagnostics(network, candidate_graph),
+                }
             )
         snapshot_id += 1
         last_snapshot_active = completed
@@ -128,14 +151,6 @@ def main() -> None:
         completed: int, total: int, responses: int, queue_length: int
     ) -> None:
         nonlocal last_progress
-        nonlocal next_snapshot
-        if (
-            (args.enable_snapshots or args.enable_closed_object_snapshots)
-            and (completed >= next_snapshot or completed == total)
-        ):
-            capture_snapshot(completed)
-            while next_snapshot <= completed:
-                next_snapshot += snapshot_interval
         now = monotonic()
         finished = completed == total and queue_length == 0
         if now - last_progress < 60 and not finished:
@@ -150,13 +165,40 @@ def main() -> None:
         )
         last_progress = now
 
-    if args.enable_snapshots or args.enable_closed_object_snapshots:
+    if (
+        args.enable_snapshots
+        or args.enable_closed_object_snapshots
+        or args.enable_graph_diagnostics
+    ):
         capture_snapshot(0)
-    engine.run(args.background_sweeps, report_progress)
+    def on_tick(tick: int) -> None:
+        nonlocal next_snapshot
+        if tick == next_snapshot:
+            capture_snapshot(tick)
+            next_snapshot += snapshot_interval
+
+    snapshot_enabled = (
+        args.enable_snapshots
+        or args.enable_closed_object_snapshots
+        or args.enable_graph_diagnostics
+    )
+    engine.run(
+        args.background_sweeps,
+        report_progress,
+        tick_callback=on_tick if snapshot_enabled else None,
+    )
+    if snapshot_enabled:
+        capture_snapshot(engine.tick)
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
-    summary = {"profile": args.profile, "N": args.N, "seed": args.seed,
-               "background_sweeps": args.background_sweeps, **engine.summary()}
+    summary = {
+        "profile": args.profile,
+        "N": args.N,
+        "seed": args.seed,
+        "background_sweeps": args.background_sweeps,
+        "final_state_hash": sha256(repr(engine.dynamics_state()).encode()).hexdigest(),
+        **engine.summary(),
+    }
     (output / "edge_response_summary.json").write_text(
         json.dumps(summary, indent=2), encoding="utf-8")
     if args.enable_snapshots:
@@ -164,11 +206,13 @@ def main() -> None:
         _write_rows(output / "edge_response_snapshots.csv", snapshots)
     if args.enable_closed_object_snapshots:
         _write_rows(output / "closed_object_snapshots.csv", object_snapshots)
-    if args.enable_worker_stats:
+    if args.enable_worker_stats or args.enable_response_histograms:
         _write_rows(
             output / "response_by_tentacle_summary.csv",
-            engine.response_by_tentacle_rows(),
+            engine.response_histogram_rows(),
         )
+    if args.enable_graph_diagnostics:
+        _write_rows(output / "graph_diagnostics.csv", diagnostic_snapshots)
     with (output / "edge_response_summary.csv").open(
         "w", newline="", encoding="utf-8"
     ) as handle:

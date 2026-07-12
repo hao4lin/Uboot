@@ -46,18 +46,26 @@ def test_continuity_metrics_keep_independent_measures() -> None:
 def test_lineage_preserves_split_merge_birth_and_death(tmp_path) -> None:
     path = tmp_path / "objects.csv"
     rows = [
-        [0, 0, 0, "pair", 2, "1|2"],
-        [0, 0, 1, "pair", 2, "8|9"],
-        [0, 0, 2, "pair", 2, "10|11"],
-        [1, 1, 0, "pair", 2, "1|3"],
-        [1, 1, 1, "pair", 2, "2|3"],
-        [1, 1, 2, "pair", 2, "2|8"],
-        [1, 1, 3, "pair", 2, "6|7"],
+        [0, 0, 20, 0, "pair", 2, "1|2"],
+        [0, 0, 20, 1, "pair", 2, "8|9"],
+        [0, 0, 20, 2, "pair", 2, "10|11"],
+        [1, 1, 20, 0, "pair", 2, "1|3"],
+        [1, 1, 20, 1, "pair", 2, "2|3"],
+        [1, 1, 20, 2, "pair", 2, "2|8"],
+        [1, 1, 20, 3, "pair", 2, "6|7"],
     ]
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(
-            ["snapshot_id", "sweep", "local_object_index", "object_type", "member_count", "member_ids"]
+            [
+                "snapshot_id",
+                "tick",
+                "N",
+                "object_snapshot_id",
+                "object_class",
+                "size",
+                "member_ids",
+            ]
         )
         writer.writerows(rows)
 
@@ -67,9 +75,10 @@ def test_lineage_preserves_split_merge_birth_and_death(tmp_path) -> None:
     assert summary["split_candidates"] == 1
     assert summary["merge_candidates"] == 1
     assert summary["unmatched_births"] >= 1
+    assert summary["unmatched_deaths"] >= 1
     assert any(row["member_ids"] == "6|7" for row in csv.DictReader(path.open()))
     assert {row["match_relation"] for row in matches} >= {
-        "primary_match",
+        "persist",
         "split_candidate",
         "merge_candidate",
     }

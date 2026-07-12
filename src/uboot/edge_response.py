@@ -1,16 +1,15 @@
-"""Configurable fair-slot selection, response, and propagation experiments."""
+"""M0/M1 slot dynamics with bounded cross-tick response workers."""
 
 from __future__ import annotations
 
 from collections import Counter, deque
-from dataclasses import dataclass, field, replace
-from random import Random
-from statistics import fmean
+from dataclasses import dataclass, field
 from math import ceil
+from random import Random
 from typing import Any, Callable
 
+from uboot.candidate_graph import get_direct_candidate_targets
 from uboot.kernel import SLOT_COUNT, RawNetwork
-from uboot.observables import mutual_pair_count
 from uboot.snapshot_lineage import histogram_bucket
 
 
@@ -24,18 +23,14 @@ class SelectionPolicy:
     candidate_mode: str = "incoming_global"
 
     def __post_init__(self) -> None:
-        for value in (
-            self.p_incoming,
-            self.p_same_slot_given_incoming,
-            self.p_global_explore,
-        ):
+        for value in (self.p_incoming, self.p_same_slot_given_incoming, self.p_global_explore):
             if not 0 <= value <= 1:
                 raise ValueError("selection probabilities must be between zero and one")
         if abs(self.p_incoming + self.p_global_explore - 1) > 1e-9:
             raise ValueError("incoming and global probabilities must sum to one")
         if self.candidate_weight_mode != "uniform":
             raise NotImplementedError(
-                f"candidate weight mode is reserved but not implemented: "
+                "candidate weight mode is reserved but not implemented: "
                 f"{self.candidate_weight_mode}"
             )
 
@@ -71,119 +66,77 @@ class ResponsePolicy:
 class ExperimentPolicy:
     selection: SelectionPolicy = field(default_factory=SelectionPolicy)
     response: ResponsePolicy = field(default_factory=ResponsePolicy)
-    scheduler_mode: str = "response_priority"
+    scheduler_mode: str = "tick"
     p_process_response: float = 1.0
 
 
-@dataclass(frozen=True, slots=True)
-class CandidateGroups:
-    incoming_same_slot: frozenset[int]
-    incoming_other_slot: frozenset[int]
-    incoming_any: frozenset[int]
-    blocked_global: frozenset[int]
-
-
-@dataclass(frozen=True, slots=True)
-class EdgeEvent:
-    event_id: int
-    root_event_id: int
-    thread_id: int
-    source: int
-    slot: int
-    old_target: int
-    new_target: int
-    old_was_consistent: bool
-    new_is_consistent: bool
-    relation_to_new_target: str
-    trigger_type: str
-    parent_event_id: int | None
-    depth: int
-    return_class: str
-    return_slots: tuple[int, ...]
-    has_same_slot_return: bool
-    response_generated: bool = False
-    response_node: int | None = None
-    response_slot_mode: str | None = None
-    response_target_mode: str | None = None
-    queue_length_after: int = 0
-    background_sweep: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class ResponseRequest:
-    node: int
-    source_event_id: int
-    root_event_id: int
-    thread_id: int
-    depth: int
+@dataclass(slots=True)
+class ResponseTask:
+    task_id: int
+    start_tick: int
+    current_node: int
     incoming_source: int
     incoming_slot: int
-    return_slots_snapshot: tuple[int, ...]
-    return_class: str
-
-
-@dataclass(slots=True)
-class ThreadState:
-    start_active_slot_count: int = 0
-    length: int = 0
-    visited_slot_states: set[tuple[int, int, int]] = field(default_factory=set)
-    visited_node_slots: set[tuple[int, int]] = field(default_factory=set)
-    visited_topologies: set[tuple[tuple[int, int, int], ...]] = field(
-        default_factory=set
-    )
-    slot_sequence: list[int] = field(default_factory=list)
-    closure: str | None = None
-    initial_object_type: str = "unavailable"
-    initial_external_tentacle_count: int = -1
+    return_slots: tuple[int, ...]
+    response_kind: str
+    chain_length: int = 1
+    hop_count: int = 0
+    source_candidate_size: int = 0
+    target_candidate_size: int = 0
+    source_has_mutual: bool = False
+    target_points_back: bool = False
+    target_same_meaning: bool = False
 
 
 class EdgeResponseEngine:
+    """One active-slot update per tick; workers advance first, once per tick."""
+
     def __init__(
         self,
         network: RawNetwork,
         policy: ExperimentPolicy,
         rng: Random,
         worker_count: int = 1,
+        response_queue_capacity: int = 1024,
+        response_queue_policy: str = "reject",
         enable_worker_stats: bool = False,
         enable_response_histograms: bool = False,
+        mode: str | None = None,
     ):
         if network.size < 4:
             raise ValueError("edge-response experiments require N >= 4")
         if any(len(set(row)) != SLOT_COUNT for row in network.targets):
             raise ValueError("each node must initially target three distinct nodes")
+        if worker_count < 0 or response_queue_capacity < 0:
+            raise ValueError("worker and queue capacities cannot be negative")
+        if response_queue_policy not in {"reject", "drop_oldest"}:
+            raise ValueError("response queue policy must be reject or drop_oldest")
         self.targets = [list(row) for row in network.targets]
-        self.incoming = [
-            [set[int]() for _ in range(network.size)] for _ in range(SLOT_COUNT)
-        ]
+        self.incoming = [[set[int]() for _ in self.targets] for _ in range(SLOT_COUNT)]
         for source, row in enumerate(self.targets):
             for slot, target in enumerate(row):
                 self.incoming[slot][target].add(source)
-        self.policy, self.rng = policy, rng
-        self.queue: deque[ResponseRequest] = deque()
-        self.counters: Counter[str] = Counter()
-        self.active_attempts = [[0] * SLOT_COUNT for _ in self.targets]
-        if worker_count < 0:
-            raise ValueError("worker count cannot be negative")
+        self.policy = policy
+        self.rng = rng
+        self.mode = mode or ("M0" if not _response_probability(policy.response) else "M1")
         self.worker_count = worker_count
+        self.response_queue_capacity = response_queue_capacity
+        self.response_queue_policy = response_queue_policy
         self.enable_worker_stats = enable_worker_stats
         self.enable_response_histograms = enable_response_histograms
-        self.response_by_tentacle: Counter[tuple[str, str, str, str]] = Counter()
-        self.threads: dict[int, ThreadState] = {}
-        self.thread_length_histogram: Counter[int] = Counter()
+        self.workers: list[int | None] = [None] * worker_count
+        self.queue: deque[int] = deque()
+        self.threads: dict[int, ResponseTask] = {}
+        self.counters: Counter[str] = Counter()
+        self.response_aggregates: Counter[tuple[str, str, str, str, str]] = Counter()
+        self.active_attempts = [[0] * SLOT_COUNT for _ in self.targets]
+        self.completed_chain_histogram: Counter[int] = Counter()
+        self.completed_lifetime_histogram: Counter[int] = Counter()
         self._fair_ring: list[tuple[int, int]] = []
         self._fair_index = 0
-        self._next_event = 1
-        self._next_thread = 1
+        self._next_task = 1
+        self.tick = 0
         self.background_sweep = 0
-        response = policy.response
-        self.responses_enabled = worker_count > 0 and any(
-            (
-                response.p_no_return,
-                response.p_same_return,
-                response.p_other_return,
-                response.p_multi_return,
-            )
-        )
 
     def run(
         self,
@@ -191,116 +144,132 @@ class EdgeResponseEngine:
         progress: Callable[[int, int, int, int], None] | None = None,
         *,
         progress_check_every: int = 1_024,
+        tick_callback: Callable[[int], None] | None = None,
     ) -> None:
-        target_attempts = background_sweeps * SLOT_COUNT * len(self.targets)
-        scheduler_actions = 0
-        while self.counters["active_attempts"] < target_attempts:
-            if self.queue and (
-                len(self.threads) >= self.worker_count
-                or
-                self.policy.scheduler_mode == "response_priority"
-                or self.rng.random() < self.policy.p_process_response
-            ):
-                self._process_response(self.queue.popleft())
-            else:
-                node, slot = self._next_fair_slot()
-                self._attempt(node, slot, "active", None)
-            scheduler_actions += 1
-            if progress is not None and scheduler_actions % progress_check_every == 0:
+        total_ticks = background_sweeps * SLOT_COUNT * len(self.targets)
+        while self.tick < total_ticks:
+            self.step_tick()
+            if tick_callback is not None:
+                tick_callback(self.tick)
+            if progress is not None and self.tick % progress_check_every == 0:
                 progress(
-                    self.counters["active_attempts"],
-                    target_attempts,
-                    self.counters["response_events"],
+                    self.tick,
+                    total_ticks,
+                    self.counters["responses_created_total"],
                     len(self.queue),
                 )
-        if self.policy.scheduler_mode == "response_priority":
-            while self.queue:
-                self._process_response(self.queue.popleft())
-                scheduler_actions += 1
-                if (
-                    progress is not None
-                    and scheduler_actions % progress_check_every == 0
-                ):
-                    progress(
-                        self.counters["active_attempts"],
-                        target_attempts,
-                        self.counters["response_events"],
-                        len(self.queue),
-                    )
         if progress is not None:
             progress(
-                self.counters["active_attempts"],
-                target_attempts,
-                self.counters["response_events"],
+                self.tick,
+                total_ticks,
+                self.counters["responses_created_total"],
                 len(self.queue),
             )
+
+    def step_tick(self) -> None:
+        if self.mode == "M1":
+            for worker_id in range(self.worker_count):
+                if self.workers[worker_id] is not None:
+                    self._advance_worker(worker_id)
+            self._assign_waiting_tasks()
+        node, slot = self._next_fair_slot()
+        self._active_update(node, slot)
+        if self.mode == "M1":
+            self._assign_waiting_tasks()
+            self._sample_queue_depth()
+        self.tick += 1
+
+    def direct_candidates(self, node: int) -> tuple[int, ...]:
+        return get_direct_candidate_targets(self.targets, self.incoming, node)
+
+    def candidate_graph(self) -> list[tuple[int, ...]]:
+        if self.mode == "M0":
+            return [tuple() for _ in self.targets]
+        return [self.direct_candidates(node) for node in range(len(self.targets))]
 
     def snapshot(self) -> RawNetwork:
         return RawNetwork(tuple(tuple(row) for row in self.targets))  # type: ignore[arg-type]
 
+    def dynamics_state(self) -> tuple[Any, ...]:
+        tasks = tuple(
+            (
+                task_id,
+                task.start_tick,
+                task.current_node,
+                task.incoming_source,
+                task.incoming_slot,
+                task.return_slots,
+                task.response_kind,
+                task.chain_length,
+                task.hop_count,
+            )
+            for task_id, task in sorted(self.threads.items())
+        )
+        return (
+            tuple(tuple(row) for row in self.targets),
+            tuple(self.workers),
+            tuple(self.queue),
+            tasks,
+            self.tick,
+            self.rng.getstate(),
+        )
+
     def summary(self) -> dict[str, Any]:
-        attempts = [value for row in self.active_attempts for value in row]
-        length_histogram = Counter(self.thread_length_histogram)
-        length_histogram.update(thread.length for thread in self.threads.values())
-        length_count = sum(length_histogram.values())
-        length_sum = sum(length * count for length, count in length_histogram.items())
-        consistent = [self._consistent_count(slot) for slot in range(SLOT_COUNT)]
+        consistent = [len(self._consistent_pairs(slot)) for slot in range(SLOT_COUNT)]
+        pair_count = sum(consistent)
+        pair_density = pair_count / (SLOT_COUNT * len(self.targets))
+        endpoint_count = 2 * pair_count
+        endpoint_density = endpoint_count / (SLOT_COUNT * len(self.targets))
+        assert endpoint_count == 2 * pair_count
+        assert endpoint_density == 2 * pair_density
+        assert 0 <= endpoint_density <= 1
+        completed = self.counters["responses_completed_total"]
         result: dict[str, Any] = dict(self.counters)
         result.update(
+            tick=self.tick,
+            active_attempts=self.tick,
+            mutual_pair_count=pair_count,
+            mutual_pair_density=pair_density,
+            mutual_endpoint_count=endpoint_count,
+            mutual_endpoint_density=endpoint_density,
             consistent_slot_0=consistent[0],
             consistent_slot_1=consistent[1],
             consistent_slot_2=consistent[2],
-            total_consistent_count=sum(consistent),
-            mutual_connection_count=mutual_pair_count(self.snapshot()),
-            response_queue_max=self.counters["response_queue_max"],
-            thread_count=self.counters["thread_count"],
-            mean_thread_length=length_sum / max(1, length_count),
-            median_thread_length=self._histogram_quantile(length_histogram, 0.5),
-            max_thread_length=max(length_histogram, default=0),
-            p90_thread_length=self._histogram_quantile(length_histogram, 0.9),
-            closure_rate=(
-                self.counters["closed_threads"]
-                / max(1, self.counters["thread_count"])
-            ),
-            active_attempt_min=min(attempts),
-            active_attempt_max=max(attempts),
-            active_attempt_mean=fmean(attempts),
-            response_queue_mean=(
-                self.counters["queue_length_sum"]
-                / max(1, self.counters["queue_length_samples"])
-            ),
-            same_slot_only_thread_count=self.counters["same_slot_only_thread_count"],
-            slot_switch_thread_count=self.counters["slot_switch_thread_count"],
-            active_worker_count=len(self.threads),
-            mean_response_lifetime=(
-                self.counters["response_lifetime_sweeps_sum"]
-                / max(1, self.counters["responses_completed_aggregate"])
-            ),
+            active_worker_count=sum(task is not None for task in self.workers),
+            worker_count=self.worker_count,
+            pending_response_count=len(self.queue),
+            max_concurrent_workers=self.counters["max_concurrent_workers"],
+            max_queue_depth=self.counters["max_queue_depth"],
+            mean_queue_depth=self.counters["queue_depth_sum"]
+            / max(1, self.counters["queue_depth_samples"]),
+            mean_completed_chain_length=self.counters["completed_chain_length_sum"]
+            / max(1, completed),
+            mean_completed_lifetime_ticks=self.counters["completed_lifetime_ticks_sum"]
+            / max(1, completed),
+            p50_lifetime_ticks=self._histogram_quantile(self.completed_lifetime_histogram, 0.5),
+            p90_lifetime_ticks=self._histogram_quantile(self.completed_lifetime_histogram, 0.9),
+            p99_lifetime_ticks=self._histogram_quantile(self.completed_lifetime_histogram, 0.99),
         )
         return result
 
-    def response_by_tentacle_rows(self) -> list[dict[str, Any]]:
+    def response_histogram_rows(self) -> list[dict[str, Any]]:
         rows = []
-        keys = {key[:3] for key in self.response_by_tentacle}
-        for object_type, bucket, completion in sorted(keys):
-            prefix = (object_type, bucket, completion)
-            count = self.response_by_tentacle[prefix + ("count",)]
-            rows.append(
-                {
-                    "initial_object_type": object_type,
-                    "tentacle_count_bucket": bucket,
-                    "completion_type": completion,
-                    "count": count,
-                    "mean_chain_length": self.response_by_tentacle[
-                        prefix + ("chain_length_sum",)
-                    ]
-                    / count,
-                    "mean_lifetime_sweeps": self.response_by_tentacle[
-                        prefix + ("lifetime_sum",)
-                    ]
-                    / count,
-                }
-            )
+        groups = {key[:4] for key in self.response_aggregates}
+        for termination, kind, context, chain_bin in sorted(groups):
+            prefix = (termination, kind, context, chain_bin)
+            for lifetime_bin in sorted(
+                key[4] for key in self.response_aggregates if key[:4] == prefix
+            ):
+                rows.append(
+                    {
+                        "termination_state": termination,
+                        "response_kind": kind,
+                        "start_tentacle_context": context,
+                        "chain_length_bin": chain_bin,
+                        "lifetime_tick_bin": lifetime_bin,
+                        "count": self.response_aggregates[prefix + (lifetime_bin,)],
+                    }
+                )
         return rows
 
     def _next_fair_slot(self) -> tuple[int, int]:
@@ -317,135 +286,208 @@ class EdgeResponseEngine:
         self._fair_index += 1
         return item
 
-    def _attempt(
-        self, node: int, slot: int, trigger: str, request: ResponseRequest | None
-    ) -> EdgeEvent | None:
-        if trigger == "active":
-            self.active_attempts[node][slot] += 1
-            self.counters["active_attempts"] += 1
-        old = self.targets[node][slot]
-        excluded = set(self.targets[node]) | {node}
-        if request is not None:
-            excluded.add(request.incoming_source)
-        groups = self._groups(node, slot, old, excluded)
-        mode = (
-            self.policy.response.target_mode if request else self.policy.selection.candidate_mode
-        )
-        target, relation = self._select(node, slot, groups, mode)
-        if target is None:
-            self.counters["no_candidate"] += 1
-            return None
-        old_consistent = self.is_consistent(node, old, slot)
-        self._retarget(node, slot, target)
-        return_slots = tuple(
-            index for index, value in enumerate(self.targets[target]) if value == node
-        )
-        return_class = self._return_class(slot, return_slots)
-        new_consistent = self.is_consistent(node, target, slot)
-        self.counters[f"{return_class.lower()}_event_count"] += 1
-        self.counters[f"{relation}_selected"] += 1
-        if old_consistent and new_consistent:
-            self.counters["both_lost_and_created_same_event"] += 1
-        elif old_consistent:
-            self.counters["old_consistency_lost_statistically"] += 1
-        elif new_consistent:
-            self.counters["new_consistency_created_statistically"] += 1
+    def _active_update(self, node: int, slot: int) -> None:
+        self.active_attempts[node][slot] += 1
+        if self.mode == "M0":
+            target = self._m0_target(node, slot)
         else:
-            self.counters["neither_consistency_change"] += 1
-        self.counters[f"{trigger}_events"] += 1
-        if not self.responses_enabled:
-            return None
-        thread_id = request.thread_id if request else self._next_thread
-        if request is None:
-            self._next_thread += 1
-        event_id = self._next_event
-        self._next_event += 1
-        event = EdgeEvent(
-            event_id, request.root_event_id if request else event_id, thread_id,
-            node, slot, old, target, old_consistent,
-            new_consistent, relation, trigger,
-            request.source_event_id if request else None,
-            request.depth if request else 0, return_class, return_slots,
-            slot in return_slots, background_sweep=self.background_sweep,
-        )
-        if request is not None:
-            self._update_thread(event)
-        generated = self._maybe_enqueue(event)
-        if request is None and generated:
-            self.threads[thread_id] = ThreadState(
-                start_active_slot_count=self.counters["active_attempts"]
-            )
-            self.counters["thread_count"] += 1
-            self._update_thread(event)
-        event = replace(
-            event,
-            response_generated=generated,
-            response_node=event.new_target if generated else None,
-            response_slot_mode=(
-                self._slot_mode_for(event.return_class) if generated else None
-            ),
-            response_target_mode=(
-                self.policy.response.target_mode if generated else None
-            ),
-            queue_length_after=len(self.queue),
-        )
-        self.counters["queue_length_sum"] += len(self.queue)
-        self.counters["queue_length_samples"] += 1
-        return event
-
-    def _groups(self, node: int, slot: int, old: int, excluded: set[int]) -> CandidateGroups:
-        same = self.incoming[slot][node] - excluded
-        any_in = set().union(*(self.incoming[s][node] for s in range(SLOT_COUNT)))
-        any_in -= excluded
-        other = any_in - same
-        return CandidateGroups(frozenset(same), frozenset(other),
-                               frozenset(any_in), frozenset(excluded | any_in))
-
-    def _select(self, node: int, slot: int, groups: CandidateGroups, mode: str) -> tuple[int | None, str]:
-        if mode == "legacy_endogenous":
-            candidates = set(groups.incoming_any)
-            for neighbor in self.targets[node]:
-                candidates.update(self.targets[neighbor])
-            candidates -= set(self.targets[node]) | {node}
-            return self._choice(candidates), "legacy_endogenous"
-        if mode == "escape_to_nonincoming" or mode == "uniform_global":
-            return self._global_choice(groups.blocked_global), "global_nonincoming"
-        prefer_same = mode == "same_slot_incoming_preferred"
-        choose_incoming = self.rng.random() < self.policy.selection.p_incoming
-        if choose_incoming:
-            choose_same = prefer_same or self.rng.random() < self.policy.selection.p_same_slot_given_incoming
-            first, second = ((groups.incoming_same_slot, groups.incoming_other_slot)
-                             if choose_same else (groups.incoming_other_slot, groups.incoming_same_slot))
-            if first or second:
-                pool = first or second
-                relation = "same_slot_incoming" if pool is groups.incoming_same_slot else "other_slot_incoming"
-                return self._choice(pool), relation
-        return self._global_choice(groups.blocked_global), "global_nonincoming"
-
-    def _choice(self, values: Any) -> int | None:
-        values = tuple(values)
-        return self.rng.choice(values) if values else None
-
-    def _global_choice(self, blocked: frozenset[int]) -> int | None:
-        size = len(self.targets)
-        if len(blocked) >= size:
-            return None
-        while True:
-            candidate = self.rng.randrange(size)
-            if candidate not in blocked:
-                return candidate
-
-    def _retarget(self, node: int, slot: int, target: int) -> None:
+            target = self._choice(self.direct_candidates(node))
+        if target is None:
+            self.counters["active_no_candidate"] += 1
+            return
         old = self.targets[node][slot]
-        self.incoming[slot][old].remove(node)
-        self.incoming[slot][target].add(node)
-        self.targets[node][slot] = target
+        self._retarget(node, slot, target)
+        self.counters["active_updates"] += 1
+        if self.mode == "M1":
+            self._create_response(node, slot, old, target)
 
-    def is_consistent(self, a: int, b: int, slot: int) -> bool:
-        return self.targets[a][slot] == b and self.targets[b][slot] == a
+    def _m0_target(self, node: int, slot: int) -> int | None:
+        excluded = set(self.targets[node]) | {node}
+        same = self.incoming[slot][node] - excluded
+        other = set().union(*(self.incoming[index][node] for index in range(SLOT_COUNT)))
+        other.difference_update(excluded | same)
+        if self.rng.random() < self.policy.selection.p_incoming and (same or other):
+            prefer_same = self.rng.random() < self.policy.selection.p_same_slot_given_incoming
+            return self._choice((same or other) if prefer_same else (other or same))
+        return self._global_choice(excluded)
 
-    def _consistent_count(self, slot: int) -> int:
-        return sum(self.is_consistent(a, b, slot) for a, b in enumerate(row[slot] for row in self.targets) if a < b)
+    def _create_response(self, source: int, slot: int, old: int, target: int) -> None:
+        return_slots = tuple(
+            index for index, value in enumerate(self.targets[target]) if value == source
+        )
+        kind = self._return_class(slot, return_slots)
+        probability = self._response_probability(kind)
+        if self.rng.random() >= probability:
+            return
+        task = ResponseTask(
+            task_id=self._next_task,
+            start_tick=self.tick,
+            current_node=target,
+            incoming_source=source,
+            incoming_slot=slot,
+            return_slots=return_slots,
+            response_kind=kind,
+            source_candidate_size=len(self.direct_candidates(source)),
+            target_candidate_size=len(self.direct_candidates(target)),
+            source_has_mutual=any(source in self.targets[value] for value in self.targets[source]),
+            target_points_back=bool(return_slots),
+            target_same_meaning=slot in return_slots,
+        )
+        self._next_task += 1
+        self.counters["responses_created_total"] += 1
+        self._submit_task(task)
+
+    def _submit_task(self, task: ResponseTask) -> None:
+        self.threads[task.task_id] = task
+        for worker_id, current in enumerate(self.workers):
+            if current is None:
+                self.workers[worker_id] = task.task_id
+                active = sum(item is not None for item in self.workers)
+                self.counters["max_concurrent_workers"] = max(
+                    self.counters["max_concurrent_workers"], active
+                )
+                return
+        if len(self.queue) < self.response_queue_capacity:
+            self.queue.append(task.task_id)
+            self.counters["max_queue_depth"] = max(
+                self.counters["max_queue_depth"], len(self.queue)
+            )
+            return
+        if self.response_queue_policy == "drop_oldest" and self.queue:
+            dropped = self.queue.popleft()
+            self._finish_task(dropped, "queue_rejected", self.tick)
+            self.queue.append(task.task_id)
+            return
+        self._finish_task(task.task_id, "queue_rejected", self.tick)
+
+    def _assign_waiting_tasks(self) -> None:
+        for worker_id, current in enumerate(self.workers):
+            if current is None and self.queue:
+                self.workers[worker_id] = self.queue.popleft()
+        active = sum(task is not None for task in self.workers)
+        self.counters["max_concurrent_workers"] = max(
+            self.counters["max_concurrent_workers"], active
+        )
+
+    def _advance_worker(self, worker_id: int) -> None:
+        task_id = self.workers[worker_id]
+        if task_id is None:
+            return
+        task = self.threads[task_id]
+        if self.targets[task.incoming_source][task.incoming_slot] != task.current_node:
+            self._finish_worker(worker_id, "invalidated")
+            return
+        slot = self._response_slot(task)
+        if slot is None:
+            self._finish_worker(worker_id, "absorbed")
+            return
+        candidates = get_direct_candidate_targets(
+            self.targets,
+            self.incoming,
+            task.current_node,
+            additionally_excluded=task.incoming_source,
+        )
+        target = self._choice(candidates)
+        if target is None:
+            self._finish_worker(worker_id, "absorbed")
+            return
+        source = task.current_node
+        self._retarget(source, slot, target)
+        task.hop_count += 1
+        task.chain_length += 1
+        return_slots = tuple(
+            index for index, value in enumerate(self.targets[target]) if value == source
+        )
+        kind = self._return_class(slot, return_slots)
+        if task.hop_count >= self.policy.response.max_chain_depth:
+            self._finish_worker(worker_id, "max_hops")
+            return
+        if not self.policy.response.allow_chain or self.rng.random() >= self._response_probability(kind):
+            self._finish_worker(worker_id, "completed")
+            return
+        task.current_node = target
+        task.incoming_source = source
+        task.incoming_slot = slot
+        task.return_slots = return_slots
+        task.response_kind = kind
+
+    def _finish_worker(self, worker_id: int, termination: str) -> None:
+        task_id = self.workers[worker_id]
+        self.workers[worker_id] = None
+        if task_id is not None:
+            self._finish_task(task_id, termination, self.tick)
+
+    def _finish_task(self, task_id: int, termination: str, completion_tick: int) -> None:
+        task = self.threads.pop(task_id, None)
+        if task is None:
+            return
+        lifetime = completion_tick - task.start_tick
+        if termination == "queue_rejected":
+            self.counters["responses_rejected_total"] += 1
+        else:
+            self.counters["responses_completed_total"] += 1
+        self.counters[f"termination_{termination}"] += 1
+        self.counters["completed_chain_length_sum"] += task.chain_length
+        self.counters["completed_lifetime_ticks_sum"] += lifetime
+        self.completed_chain_histogram[task.chain_length] += 1
+        self.completed_lifetime_histogram[lifetime] += 1
+        if self.enable_response_histograms:
+            context = (
+                f"source_slot={task.incoming_slot};source_mutual={int(task.source_has_mutual)};"
+                f"target_back={int(task.target_points_back)};"
+                f"target_same={int(task.target_same_meaning)};"
+                f"source_candidates={task.source_candidate_size};"
+                f"target_candidates={task.target_candidate_size}"
+            )
+            self.response_aggregates[
+                (
+                    termination,
+                    task.response_kind,
+                    context,
+                    histogram_bucket(task.chain_length),
+                    histogram_bucket(lifetime),
+                )
+            ] += 1
+
+    def _sample_queue_depth(self) -> None:
+        self.counters["queue_depth_sum"] += len(self.queue)
+        self.counters["queue_depth_samples"] += 1
+
+    def _response_slot(self, task: ResponseTask) -> int | None:
+        mode = self._slot_mode_for(task.response_kind)
+        if mode == "none":
+            return None
+        if mode == "same_as_incoming":
+            return task.incoming_slot
+        if mode == "returning_slot":
+            return self._choice(task.return_slots)
+        if mode == "third_slot":
+            return self._choice(
+                tuple(set(range(SLOT_COUNT)) - {task.incoming_slot} - set(task.return_slots))
+            )
+        if mode == "random_slot":
+            return self.rng.randrange(SLOT_COUNT)
+        if mode == "weighted_slot":
+            raise NotImplementedError("weighted response-slot mode is reserved")
+        raise ValueError(f"unknown response slot mode: {mode}")
+
+    def _response_probability(self, kind: str) -> float:
+        policy = self.policy.response
+        return {
+            "NO_RETURN": policy.p_no_return,
+            "SAME_RETURN": policy.p_same_return,
+            "OTHER_RETURN": policy.p_other_return,
+            "MULTI_RETURN": policy.p_multi_return,
+        }[kind]
+
+    def _slot_mode_for(self, kind: str) -> str:
+        policy = self.policy.response
+        return {
+            "NO_RETURN": policy.slot_no_return,
+            "SAME_RETURN": policy.slot_same_return,
+            "OTHER_RETURN": policy.slot_other_return,
+            "MULTI_RETURN": policy.slot_multi_return,
+        }[kind]
 
     def _return_class(self, slot: int, returns: tuple[int, ...]) -> str:
         if len(returns) > 1:
@@ -454,127 +496,33 @@ class EdgeResponseEngine:
             return "NO_RETURN"
         return "SAME_RETURN" if returns[0] == slot else "OTHER_RETURN"
 
-    def _maybe_enqueue(self, event: EdgeEvent) -> bool:
-        policy = self.policy.response
-        probability = {
-            "NO_RETURN": policy.p_no_return, "SAME_RETURN": policy.p_same_return,
-            "OTHER_RETURN": policy.p_other_return, "MULTI_RETURN": policy.p_multi_return,
-        }[event.return_class]
-        if self.rng.random() >= probability or not policy.allow_chain and event.depth > 0:
-            return False
-        if event.depth >= policy.max_chain_depth:
-            self.counters["terminated_max_depth"] += 1
-            return False
-        self.queue.append(ResponseRequest(event.new_target, event.event_id,
-            event.root_event_id, event.thread_id, event.depth + 1, event.source,
-            event.slot, event.return_slots, event.return_class))
-        self.counters[f"responses_generated_{event.return_class.lower()}"] += 1
-        self.counters["response_queue_max"] = max(self.counters["response_queue_max"], len(self.queue))
-        return True
+    def _retarget(self, node: int, slot: int, target: int) -> None:
+        old = self.targets[node][slot]
+        self.incoming[slot][old].remove(node)
+        self.incoming[slot][target].add(node)
+        self.targets[node][slot] = target
 
-    def _process_response(self, request: ResponseRequest) -> None:
-        if self.targets[request.incoming_source][request.incoming_slot] != request.node:
-            self.counters["responses_obsolete"] += 1
-            self._finalize_thread(request.thread_id, "obsolete")
-            return
-        slot = self._response_slot(request)
-        if slot is None:
-            self._finalize_thread(request.thread_id, "no_slot")
-            return
-        self.counters["responses_processed"] += 1
-        event = self._attempt(request.node, slot, "response", request)
-        if event is None or not event.response_generated:
-            self._finalize_thread(request.thread_id, "complete")
-
-    def _response_slot(self, request: ResponseRequest) -> int | None:
-        mode = self._slot_mode_for(request.return_class)
-        if mode == "none":
-            return None
-        if mode == "same_as_incoming":
-            return request.incoming_slot
-        if mode == "returning_slot":
-            return (
-                self.rng.choice(request.return_slots_snapshot)
-                if request.return_slots_snapshot
-                else None
-            )
-        if mode == "third_slot":
-            remaining = set(range(SLOT_COUNT)) - {request.incoming_slot} - set(request.return_slots_snapshot)
-            return self._choice(remaining)
-        if mode == "random_slot":
-            return self.rng.randrange(SLOT_COUNT)
-        if mode == "weighted_slot":
-            raise NotImplementedError("weighted response-slot mode is reserved")
-        raise ValueError(f"unknown response slot mode: {mode}")
-
-    def _slot_mode_for(self, return_class: str) -> str:
-        p = self.policy.response
+    def _consistent_pairs(self, slot: int) -> set[tuple[int, int]]:
         return {
-            "NO_RETURN": p.slot_no_return,
-            "SAME_RETURN": p.slot_same_return,
-            "OTHER_RETURN": p.slot_other_return,
-            "MULTI_RETURN": p.slot_multi_return,
-        }[return_class]
+            (node, target)
+            for node, target in enumerate(row[slot] for row in self.targets)
+            if node < target and self.targets[target][slot] == node
+        }
 
-    def _update_thread(self, event: EdgeEvent) -> None:
-        thread = self.threads[event.thread_id]
-        state = (event.source, event.slot, event.new_target)
-        node_slot = (event.source, event.slot)
-        topology = self._local_topology_fingerprint(event.source, event.new_target)
-        if state in thread.visited_slot_states:
-            thread.closure = "slot_state_revisit"
-        elif node_slot in thread.visited_node_slots:
-            thread.closure = "node_slot_revisit"
-        elif topology in thread.visited_topologies:
-            thread.closure = "topology_revisit"
-        thread.visited_slot_states.add(state)
-        thread.visited_node_slots.add(node_slot)
-        thread.visited_topologies.add(topology)
-        thread.slot_sequence.append(event.slot)
-        thread.length += 1
+    def is_consistent(self, a: int, b: int, slot: int) -> bool:
+        return self.targets[a][slot] == b and self.targets[b][slot] == a
 
-    def _finalize_thread(self, thread_id: int, reason: str) -> None:
-        thread = self.threads.pop(thread_id, None)
-        if thread is None:
-            return
-        self.thread_length_histogram[thread.length] += 1
-        lifetime_sweeps = (
-            self.counters["active_attempts"] - thread.start_active_slot_count
-        ) // (SLOT_COUNT * len(self.targets))
-        if self.enable_response_histograms:
-            self.counters[
-                f"response_chain_length_hist_{histogram_bucket(thread.length)}"
-            ] += 1
-            self.counters[
-                f"response_lifetime_sweeps_hist_{histogram_bucket(lifetime_sweeps)}"
-            ] += 1
-            self.counters[
-                "response_visited_count_hist_"
-                f"{histogram_bucket(len(thread.visited_node_slots))}"
-            ] += 1
-        self.counters["response_lifetime_sweeps_sum"] += lifetime_sweeps
-        self.counters["responses_completed_aggregate"] += 1
-        if self.enable_worker_stats:
-            key = (
-                thread.initial_object_type,
-                (
-                    histogram_bucket(thread.initial_external_tentacle_count)
-                    if thread.initial_external_tentacle_count >= 0
-                    else "unavailable"
-                ),
-                reason,
-            )
-            self.response_by_tentacle[key + ("count",)] += 1
-            self.response_by_tentacle[key + ("chain_length_sum",)] += thread.length
-            self.response_by_tentacle[key + ("lifetime_sum",)] += lifetime_sweeps
-        self.counters[f"terminated_{reason}"] += 1
-        if thread.closure is not None:
-            self.counters["closed_threads"] += 1
-            self.counters[f"closure_{thread.closure}"] += 1
-        if len(set(thread.slot_sequence)) <= 1:
-            self.counters["same_slot_only_thread_count"] += 1
-        else:
-            self.counters["slot_switch_thread_count"] += 1
+    def _choice(self, values: Any) -> int | None:
+        values = tuple(values)
+        return self.rng.choice(values) if values else None
+
+    def _global_choice(self, blocked: set[int]) -> int | None:
+        if len(blocked) >= len(self.targets):
+            return None
+        while True:
+            candidate = self.rng.randrange(len(self.targets))
+            if candidate not in blocked:
+                return candidate
 
     def _histogram_quantile(self, histogram: Counter[int], quantile: float) -> int:
         total = sum(histogram.values())
@@ -588,19 +536,16 @@ class EdgeResponseEngine:
                 return value
         return 0
 
-    def _local_topology_fingerprint(
-        self, source: int, target: int
-    ) -> tuple[tuple[int, int, int], ...]:
-        local = {source, target}
-        local.update(self.targets[source])
-        local.update(self.targets[target])
-        consensus = {
-            (min(node, other), slot, max(node, other))
-            for node in local
-            for slot, other in enumerate(self.targets[node])
-            if other in local and self.is_consistent(node, other, slot)
-        }
-        return tuple(sorted(consensus))
+
+def _response_probability(policy: ResponsePolicy) -> float:
+    return sum(
+        (
+            policy.p_no_return,
+            policy.p_same_return,
+            policy.p_other_return,
+            policy.p_multi_return,
+        )
+    )
 
 
 def distinct_random_network(size: int, rng: Random) -> RawNetwork:
@@ -619,12 +564,10 @@ def policy_profile(name: str, **overrides: Any) -> ExperimentPolicy:
     profiles: dict[str, dict[str, Any]] = {
         "M0": dict(allow_chain=False),
         "M1": dict(p_same_return=1, slot_same_return="same_as_incoming"),
-        "M2": dict(p_same_return=1, slot_same_return="same_as_incoming",
-                   target_mode="escape_to_nonincoming"),
+        "M2": dict(p_same_return=1, slot_same_return="same_as_incoming", target_mode="escape_to_nonincoming"),
         "M3": dict(p_other_return=1, slot_other_return="returning_slot"),
         "M4": dict(p_other_return=1, slot_other_return="third_slot"),
-        "M5": dict(p_no_return=0.1, p_same_return=0.1, p_other_return=0.1,
-                   slot_no_return="same_as_incoming"),
+        "M5": dict(p_no_return=0.1, p_same_return=0.1, p_other_return=0.1, slot_no_return="same_as_incoming"),
         "M6": {},
         "LEGACY": dict(allow_chain=False),
     }
@@ -632,8 +575,9 @@ def policy_profile(name: str, **overrides: Any) -> ExperimentPolicy:
         raise ValueError(f"unknown policy profile: {name}")
     base.update(profiles[name])
     base.update(overrides.get("response", {}))
-    if name == "LEGACY":
-        selection = SelectionPolicy(candidate_mode="legacy_endogenous")
-    return ExperimentPolicy(selection, ResponsePolicy(**base),
-                            overrides.get("scheduler_mode", "response_priority"),
-                            overrides.get("p_process_response", 1.0))
+    return ExperimentPolicy(
+        selection,
+        ResponsePolicy(**base),
+        "tick",
+        overrides.get("p_process_response", 1.0),
+    )
