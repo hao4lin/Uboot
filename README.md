@@ -21,6 +21,8 @@ py -m venv .venv
 .venv\Scripts\python -m pip install -e ".[dev]"
 .venv\Scripts\python -m pytest
 .venv\Scripts\python experiments\endogenous_bootstrap.py --N 1000 --max-steps 1000000 --seed 0
+.venv\Scripts\python experiments\edge_response.py --profile M1 --N 100 --background-sweeps 1000 --seed 0
+.venv\Scripts\python experiments\edge_response_batch.py --sizes 20 50 100 --seeds 0 1 2 3 4
 ```
 
 See `docs/architecture.md`, `docs/iboot-contract.md`, and

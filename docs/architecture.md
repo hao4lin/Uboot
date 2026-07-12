@@ -32,6 +32,13 @@ boundaries. Components and simple cycles are computed only at heavier boundaries
 Creation/destruction turnover and connection lifetimes are deliberately omitted:
 both would require statistics-only bookkeeping on every rewrite.
 
+The separate edge-response experiment family uses semantic slot types, a
+shuffled fair-slot ring, incoming/global candidate groups, and an optional FIFO
+response chain. Any-slot mutual relations and same-slot consensus are distinct
+derived statistics. Candidate generation, target selection, retargeting, and
+response generation remain separate boundaries. See
+`docs/edge_response_logic_audit.md` for the prior-model audit.
+
 The initial sequential `FusionPlan.run` is a minimal executable boundary, not a
 claim that the final simulator is fundamentally sequential. It may later be
 replaced or supplemented by graph, fixed-point, concurrent, or cortical-style
