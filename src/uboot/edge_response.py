@@ -8,9 +8,9 @@ from math import ceil
 from random import Random
 from typing import Any, Callable
 
-from uboot.candidate_graph import get_direct_candidate_targets
+from uboot.candidate_graph import get_current_candidate_targets
 from uboot.kernel import SLOT_COUNT, RawNetwork
-from uboot.snapshot_lineage import histogram_bucket
+from uboot.snapshot_lineage import histogram_bucket, layered_topology_stats
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +102,7 @@ class EdgeResponseEngine:
         enable_worker_stats: bool = False,
         enable_response_histograms: bool = False,
         mode: str | None = None,
+        candidate_rule: str = "incoming_excluding_out",
     ):
         if network.size < 4:
             raise ValueError("edge-response experiments require N >= 4")
@@ -119,6 +120,7 @@ class EdgeResponseEngine:
         self.policy = policy
         self.rng = rng
         self.mode = mode or ("M0" if not _response_probability(policy.response) else "M1")
+        self.candidate_rule = candidate_rule
         self.worker_count = worker_count
         self.response_queue_capacity = response_queue_capacity
         self.response_queue_policy = response_queue_policy
@@ -180,7 +182,9 @@ class EdgeResponseEngine:
         self.tick += 1
 
     def direct_candidates(self, node: int) -> tuple[int, ...]:
-        return get_direct_candidate_targets(self.targets, self.incoming, node)
+        return get_current_candidate_targets(
+            self.targets, self.incoming, node, rule=self.candidate_rule
+        )
 
     def candidate_graph(self) -> list[tuple[int, ...]]:
         if self.mode == "M0":
@@ -206,6 +210,7 @@ class EdgeResponseEngine:
             for task_id, task in sorted(self.threads.items())
         )
         return (
+            self.candidate_rule,
             tuple(tuple(row) for row in self.targets),
             tuple(self.workers),
             tuple(self.queue),
@@ -216,22 +221,13 @@ class EdgeResponseEngine:
 
     def summary(self) -> dict[str, Any]:
         consistent = [len(self._consistent_pairs(slot)) for slot in range(SLOT_COUNT)]
-        pair_count = sum(consistent)
-        pair_density = pair_count / (SLOT_COUNT * len(self.targets))
-        endpoint_count = 2 * pair_count
-        endpoint_density = endpoint_count / (SLOT_COUNT * len(self.targets))
-        assert endpoint_count == 2 * pair_count
-        assert endpoint_density == 2 * pair_density
-        assert 0 <= endpoint_density <= 1
+        topology = layered_topology_stats(self.snapshot(), self.candidate_graph())
         completed = self.counters["responses_completed_total"]
         result: dict[str, Any] = dict(self.counters)
         result.update(
             tick=self.tick,
             active_attempts=self.tick,
-            mutual_pair_count=pair_count,
-            mutual_pair_density=pair_density,
-            mutual_endpoint_count=endpoint_count,
-            mutual_endpoint_density=endpoint_density,
+            **topology,
             consistent_slot_0=consistent[0],
             consistent_slot_1=consistent[1],
             consistent_slot_2=consistent[2],
@@ -381,11 +377,15 @@ class EdgeResponseEngine:
         if slot is None:
             self._finish_worker(worker_id, "absorbed")
             return
-        candidates = get_direct_candidate_targets(
-            self.targets,
-            self.incoming,
-            task.current_node,
-            additionally_excluded=task.incoming_source,
+        candidates = tuple(
+            target
+            for target in get_current_candidate_targets(
+                self.targets,
+                self.incoming,
+                task.current_node,
+                rule=self.candidate_rule,
+            )
+            if target != task.incoming_source
         )
         target = self._choice(candidates)
         if target is None:

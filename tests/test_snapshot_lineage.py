@@ -78,7 +78,39 @@ def test_lineage_preserves_split_merge_birth_and_death(tmp_path) -> None:
     assert summary["unmatched_deaths"] >= 1
     assert any(row["member_ids"] == "6|7" for row in csv.DictReader(path.open()))
     assert {row["match_relation"] for row in matches} >= {
-        "persist",
+        "member_replacement",
         "split_candidate",
         "merge_candidate",
     }
+
+
+def test_lineage_classifies_growth_and_shrink(tmp_path) -> None:
+    path = tmp_path / "objects.csv"
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "snapshot_id",
+                "tick",
+                "N",
+                "object_snapshot_id",
+                "object_class",
+                "size",
+                "member_ids",
+            ]
+        )
+        writer.writerows(
+            (
+                [0, 0, 10, 0, "pair", 2, "1|2"],
+                [1, 1, 10, 0, "triple", 3, "1|2|3"],
+                [2, 2, 10, 0, "pair", 2, "1|2"],
+            )
+        )
+
+    analyze_lineages(path, tmp_path / "analysis")
+    relations = {
+        row["match_relation"]
+        for row in csv.DictReader((tmp_path / "analysis" / "object_lineages.csv").open())
+    }
+
+    assert {"growth", "shrink"} <= relations

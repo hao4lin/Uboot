@@ -10,7 +10,9 @@ from uboot.kernel import RawNetwork
 from uboot.snapshot_lineage import same_meaning_mutual_pairs
 
 
-def relation_sets(network: RawNetwork, node: int) -> dict[str, tuple[int, ...]]:
+def relation_sets(
+    network: RawNetwork, node: int, *, rule: str = "incoming_excluding_out"
+) -> dict[str, tuple[int, ...]]:
     incoming = incoming_index(network)
     direct_in = set().union(*(incoming[slot][node] for slot in range(3)))
     direct_out = set(network.targets[node])
@@ -20,7 +22,7 @@ def relation_sets(network: RawNetwork, node: int) -> dict[str, tuple[int, ...]]:
         for target in network.targets[neighbor]
         if target != node
     }
-    persistent = set(direct_candidate_graph(network)[node])
+    persistent = set(direct_candidate_graph(network, rule=rule)[node])
     return {
         "direct_IN": tuple(direct_in),
         "direct_OUT": tuple(direct_out),
@@ -31,9 +33,9 @@ def relation_sets(network: RawNetwork, node: int) -> dict[str, tuple[int, ...]]:
 
 
 def diagnose_mutual_candidates(
-    network: RawNetwork, *, sample_limit: int = 20
+    network: RawNetwork, *, sample_limit: int = 20, rule: str = "incoming_excluding_out"
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    graph = direct_candidate_graph(network)
+    graph = direct_candidate_graph(network, rule=rule)
     pairs = sorted(same_meaning_mutual_pairs(network))
     relations: Counter[str] = Counter()
     rows = []
@@ -55,8 +57,8 @@ def diagnose_mutual_candidates(
             relation = "disconnected"
         relations[relation] += 1
         if len(rows) < sample_limit:
-            left_sets = relation_sets(network, left)
-            right_sets = relation_sets(network, right)
+            left_sets = relation_sets(network, left, rule=rule)
+            right_sets = relation_sets(network, right, rule=rule)
             rows.append(
                 {
                     "A": left,

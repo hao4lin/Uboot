@@ -15,30 +15,40 @@ def incoming_index(network: RawNetwork) -> list[list[set[int]]]:
     return index
 
 
-def get_direct_candidate_targets(
+def get_current_candidate_targets(
     targets: list[list[int]] | tuple[tuple[int, int, int], ...],
     incoming: list[list[set[int]]],
     node_id: int,
     *,
-    additionally_excluded: int | None = None,
+    rule: str = "incoming_excluding_out",
 ) -> tuple[int, ...]:
-    """Return the exact direct relation candidates used by M1 selection."""
+    """Return the current candidate support relation for one configured rule."""
 
-    excluded = set(targets[node_id])
-    excluded.add(node_id)
-    if additionally_excluded is not None:
-        excluded.add(additionally_excluded)
-    candidates: set[int] = set()
+    direct_in: set[int] = set()
     for slot in range(SLOT_COUNT):
-        candidates.update(incoming[slot][node_id])
-    candidates.difference_update(excluded)
-    return tuple(candidates)
+        direct_in.update(incoming[slot][node_id])
+    if rule == "incoming_excluding_out":
+        direct_in.difference_update(targets[node_id])
+        direct_in.discard(node_id)
+        return tuple(direct_in)
+    if rule == "endogenous_in_out2":
+        out2 = {
+            second_target
+            for first_target in targets[node_id]
+            for second_target in targets[first_target]
+        }
+        candidates = direct_in | out2
+        candidates.discard(node_id)
+        return tuple(candidates)
+    raise ValueError(f"unknown candidate rule: {rule}")
 
 
-def direct_candidate_graph(network: RawNetwork) -> list[tuple[int, ...]]:
+def direct_candidate_graph(
+    network: RawNetwork, *, rule: str = "incoming_excluding_out"
+) -> list[tuple[int, ...]]:
     incoming = incoming_index(network)
     return [
-        get_direct_candidate_targets(network.targets, incoming, node)
+        get_current_candidate_targets(network.targets, incoming, node, rule=rule)
         for node in range(network.size)
     ]
 
