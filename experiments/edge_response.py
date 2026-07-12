@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-from dataclasses import asdict
 import json
 from pathlib import Path
 from random import Random
@@ -21,6 +20,8 @@ def main() -> None:
     parser.add_argument("--N", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--background-sweeps", type=int, default=1_000)
+    parser.add_argument("--snapshot-interval-sweeps", type=int, default=100)
+    parser.add_argument("--worker-count", type=int, default=1)
     parser.add_argument("--config")
     parser.add_argument("--p-incoming", type=float)
     parser.add_argument("--p-same-slot-given-incoming", type=float)
@@ -40,6 +41,10 @@ def main() -> None:
     parser.add_argument("--p-process-response", type=float)
     parser.add_argument("--output-dir", default="artifacts/edge_response")
     args = parser.parse_args()
+    if args.snapshot_interval_sweeps < 1:
+        parser.error("--snapshot-interval-sweeps must be positive")
+    if args.worker_count < 1:
+        parser.error("--worker-count must be positive")
     overrides: dict[str, Any] = {}
     if args.config:
         overrides = json.loads(Path(args.config).read_text(encoding="utf-8"))
@@ -71,14 +76,32 @@ def main() -> None:
     _set(overrides, "scheduler_mode", args.scheduler_mode)
     _set(overrides, "p_process_response", args.p_process_response)
     rng = Random(args.seed)
-    engine = EdgeResponseEngine(distinct_random_network(args.N, rng),
-                                policy_profile(args.profile, **overrides), rng)
+    engine = EdgeResponseEngine(
+        distinct_random_network(args.N, rng),
+        policy_profile(args.profile, **overrides),
+        rng,
+        worker_count=args.worker_count,
+    )
     last_progress = monotonic()
+    snapshot_interval = args.snapshot_interval_sweeps * 3 * args.N
+    next_snapshot = snapshot_interval
+    snapshots: list[dict[str, Any]] = []
 
     def report_progress(
         completed: int, total: int, responses: int, queue_length: int
     ) -> None:
         nonlocal last_progress
+        nonlocal next_snapshot
+        if completed >= next_snapshot or completed == total:
+            snapshots.append(
+                {
+                    "active_attempts": completed,
+                    "background_sweep": completed / (3 * args.N),
+                    **engine.summary(),
+                }
+            )
+            while next_snapshot <= completed:
+                next_snapshot += snapshot_interval
         now = monotonic()
         finished = completed == total and queue_length == 0
         if now - last_progress < 60 and not finished:
@@ -100,12 +123,14 @@ def main() -> None:
                "background_sweeps": args.background_sweeps, **engine.summary()}
     (output / "edge_response_summary.json").write_text(
         json.dumps(summary, indent=2), encoding="utf-8")
-    with (output / "edge_response_events.csv").open("w", newline="", encoding="utf-8") as handle:
-        rows = [asdict(event) for event in engine.events]
-        if rows:
-            writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+    with (output / "edge_response_snapshots.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as handle:
+        if snapshots:
+            fields = sorted({key for row in snapshots for key in row})
+            writer = csv.DictWriter(handle, fieldnames=fields)
             writer.writeheader()
-            writer.writerows(rows)
+            writer.writerows(snapshots)
     with (output / "edge_response_summary.csv").open(
         "w", newline="", encoding="utf-8"
     ) as handle:
@@ -116,7 +141,8 @@ def main() -> None:
         "# Edge-response experiment report\n\n"
         f"Profile: {args.profile}; N={args.N}; seed={args.seed}.\n\n"
         "No physical interpretation is assigned. See edge_response_summary.json "
-        "and edge_response_events.csv.\n", encoding="utf-8")
+        "and edge_response_snapshots.csv. Continuous event recording is disabled.\n",
+        encoding="utf-8")
     audit = Path(__file__).parents[1] / "docs" / "edge_response_logic_audit.md"
     (output / "edge_response_logic_audit.md").write_text(
         audit.read_text(encoding="utf-8"), encoding="utf-8"

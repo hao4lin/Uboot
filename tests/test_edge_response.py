@@ -20,6 +20,8 @@ def test_distinct_targets_and_fair_slot_schedule_are_preserved() -> None:
 
     assert all(len(set(row)) == 3 for row in engine.targets)
     assert {count for row in engine.active_attempts for count in row} == {5}
+    assert engine.threads == {}
+    assert engine.counters["thread_count"] == 0
 
 
 def test_mutual_and_same_slot_consensus_are_separate_statistics() -> None:
@@ -50,6 +52,7 @@ def test_same_return_profile_can_generate_response_events() -> None:
 
     assert engine.counters["response_events"] > 0
     assert all(len(set(row)) == 3 for row in engine.targets)
+    assert engine.threads == {}
 
 
 def test_reserved_candidate_weight_modes_fail_explicitly() -> None:

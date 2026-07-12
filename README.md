@@ -30,5 +30,9 @@ current FIFO length to standard error every 60 seconds, plus final completion.
 Batch runs print a separator before every child experiment with its batch index,
 profile, N, seed, background sweeps, and output directory.
 
+Edge-response output uses bounded periodic snapshots rather than continuous event
+logs. `--snapshot-interval-sweeps` controls snapshot frequency and
+`--worker-count` controls concurrent reusable response tendrils (default one).
+
 See `docs/architecture.md`, `docs/iboot-contract.md`, and
 `docs/legacy-inventory.md` before adding simulation behavior.

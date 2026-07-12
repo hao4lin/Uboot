@@ -15,6 +15,8 @@ def main() -> None:
     parser.add_argument("--sizes", nargs="+", type=int, default=[20, 50, 100, 500])
     parser.add_argument("--seeds", nargs="+", type=int, default=[0, 1, 2, 3, 4])
     parser.add_argument("--background-sweeps", type=int, default=1_000)
+    parser.add_argument("--snapshot-interval-sweeps", type=int, default=100)
+    parser.add_argument("--worker-count", type=int, default=1)
     parser.add_argument("--output-dir", default="artifacts/edge_response_batch")
     args = parser.parse_args()
     runner = Path(__file__).with_name("edge_response.py")
@@ -32,6 +34,8 @@ def main() -> None:
                     f"BATCH {batch_index}/{total_batches} | profile={profile} | "
                     f"N={size} | seed={seed} | "
                     f"background_sweeps={args.background_sweeps}",
+                    f"worker_count={args.worker_count} | "
+                    f"snapshot_interval_sweeps={args.snapshot_interval_sweeps}",
                     f"output={destination}",
                     "=" * 78,
                     sep="\n",
@@ -40,7 +44,9 @@ def main() -> None:
                 )
                 subprocess.run([sys.executable, str(runner), "--profile", profile,
                     "--N", str(size), "--seed", str(seed), "--background-sweeps",
-                    str(args.background_sweeps), "--output-dir", str(destination)], check=True)
+                    str(args.background_sweeps), "--snapshot-interval-sweeps",
+                    str(args.snapshot_interval_sweeps), "--worker-count",
+                    str(args.worker_count), "--output-dir", str(destination)], check=True)
                 summaries.append(json.loads(
                     (destination / "edge_response_summary.json").read_text(encoding="utf-8")
                 ))
@@ -55,7 +61,7 @@ def main() -> None:
     (output / "edge_response_experiment_report.md").write_text(
         "# Edge-response batch report\n\n"
         "This report assigns no physical interpretation. Compare the generated "
-        "summary CSV and per-run event logs across M0--M6.\n",
+        "summary CSV and per-run periodic snapshots across M0--M6.\n",
         encoding="utf-8",
     )
 

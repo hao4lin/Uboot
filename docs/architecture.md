@@ -39,6 +39,12 @@ derived statistics. Candidate generation, target selection, retargeting, and
 response generation remain separate boundaries. See
 `docs/edge_response_logic_audit.md` for the prior-model audit.
 
+Edge-response production runs retain no continuous event list. Periodic snapshot
+summaries are bounded by configuration, while response-chain state is held only
+for the configured number of reusable workers and compressed into histograms on
+completion. Global candidates are sampled lazily instead of materializing all N
+nodes on every active opportunity.
+
 The initial sequential `FusionPlan.run` is a minimal executable boundary, not a
 claim that the final simulator is fundamentally sequential. It may later be
 replaced or supplemented by graph, fixed-point, concurrent, or cortical-style

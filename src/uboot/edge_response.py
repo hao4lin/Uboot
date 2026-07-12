@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from collections import Counter, deque
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field, replace
 from random import Random
-from statistics import fmean, median
+from statistics import fmean
 from math import ceil
 from typing import Any, Callable
 
@@ -79,7 +79,7 @@ class CandidateGroups:
     incoming_same_slot: frozenset[int]
     incoming_other_slot: frozenset[int]
     incoming_any: frozenset[int]
-    non_incoming_global: frozenset[int]
+    blocked_global: frozenset[int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,7 +134,13 @@ class ThreadState:
 
 
 class EdgeResponseEngine:
-    def __init__(self, network: RawNetwork, policy: ExperimentPolicy, rng: Random):
+    def __init__(
+        self,
+        network: RawNetwork,
+        policy: ExperimentPolicy,
+        rng: Random,
+        worker_count: int = 1,
+    ):
         if network.size < 4:
             raise ValueError("edge-response experiments require N >= 4")
         if any(len(set(row)) != SLOT_COUNT for row in network.targets):
@@ -148,15 +154,27 @@ class EdgeResponseEngine:
                 self.incoming[slot][target].add(source)
         self.policy, self.rng = policy, rng
         self.queue: deque[ResponseRequest] = deque()
-        self.events: list[EdgeEvent] = []
         self.counters: Counter[str] = Counter()
         self.active_attempts = [[0] * SLOT_COUNT for _ in self.targets]
+        if worker_count < 1:
+            raise ValueError("worker count must be positive")
+        self.worker_count = worker_count
         self.threads: dict[int, ThreadState] = {}
+        self.thread_length_histogram: Counter[int] = Counter()
         self._fair_ring: list[tuple[int, int]] = []
         self._fair_index = 0
         self._next_event = 1
         self._next_thread = 1
         self.background_sweep = 0
+        response = policy.response
+        self.responses_enabled = any(
+            (
+                response.p_no_return,
+                response.p_same_return,
+                response.p_other_return,
+                response.p_multi_return,
+            )
+        )
 
     def run(
         self,
@@ -169,6 +187,8 @@ class EdgeResponseEngine:
         scheduler_actions = 0
         while self.counters["active_attempts"] < target_attempts:
             if self.queue and (
+                len(self.threads) >= self.worker_count
+                or
                 self.policy.scheduler_mode == "response_priority"
                 or self.rng.random() < self.policy.p_process_response
             ):
@@ -211,7 +231,10 @@ class EdgeResponseEngine:
 
     def summary(self) -> dict[str, Any]:
         attempts = [value for row in self.active_attempts for value in row]
-        lengths = sorted(thread.length for thread in self.threads.values())
+        length_histogram = Counter(self.thread_length_histogram)
+        length_histogram.update(thread.length for thread in self.threads.values())
+        length_count = sum(length_histogram.values())
+        length_sum = sum(length * count for length, count in length_histogram.items())
         consistent = [self._consistent_count(slot) for slot in range(SLOT_COUNT)]
         result: dict[str, Any] = dict(self.counters)
         result.update(
@@ -221,29 +244,25 @@ class EdgeResponseEngine:
             total_consistent_count=sum(consistent),
             mutual_connection_count=mutual_pair_count(self.snapshot()),
             response_queue_max=self.counters["response_queue_max"],
-            thread_count=len(lengths),
-            mean_thread_length=fmean(lengths) if lengths else 0,
-            median_thread_length=median(lengths) if lengths else 0,
-            max_thread_length=max(lengths, default=0),
-            p90_thread_length=(lengths[ceil(0.9 * len(lengths)) - 1] if lengths else 0),
+            thread_count=self.counters["thread_count"],
+            mean_thread_length=length_sum / max(1, length_count),
+            median_thread_length=self._histogram_quantile(length_histogram, 0.5),
+            max_thread_length=max(length_histogram, default=0),
+            p90_thread_length=self._histogram_quantile(length_histogram, 0.9),
             closure_rate=(
-                sum(thread.closure is not None for thread in self.threads.values())
-                / max(1, len(lengths))
+                self.counters["closed_threads"]
+                / max(1, self.counters["thread_count"])
             ),
             active_attempt_min=min(attempts),
             active_attempt_max=max(attempts),
             active_attempt_mean=fmean(attempts),
             response_queue_mean=(
-                fmean(event.queue_length_after for event in self.events)
-                if self.events
-                else 0
+                self.counters["queue_length_sum"]
+                / max(1, self.counters["queue_length_samples"])
             ),
-            same_slot_only_thread_count=sum(
-                len(set(thread.slot_sequence)) <= 1 for thread in self.threads.values()
-            ),
-            slot_switch_thread_count=sum(
-                len(set(thread.slot_sequence)) > 1 for thread in self.threads.values()
-            ),
+            same_slot_only_thread_count=self.counters["same_slot_only_thread_count"],
+            slot_switch_thread_count=self.counters["slot_switch_thread_count"],
+            active_worker_count=len(self.threads),
         )
         return result
 
@@ -285,48 +304,54 @@ class EdgeResponseEngine:
             index for index, value in enumerate(self.targets[target]) if value == node
         )
         return_class = self._return_class(slot, return_slots)
+        new_consistent = self.is_consistent(node, target, slot)
+        self.counters[f"{return_class.lower()}_event_count"] += 1
+        self.counters[f"{relation}_selected"] += 1
+        if old_consistent and new_consistent:
+            self.counters["both_lost_and_created_same_event"] += 1
+        elif old_consistent:
+            self.counters["old_consistency_lost_statistically"] += 1
+        elif new_consistent:
+            self.counters["new_consistency_created_statistically"] += 1
+        else:
+            self.counters["neither_consistency_change"] += 1
+        self.counters[f"{trigger}_events"] += 1
+        if not self.responses_enabled:
+            return None
         thread_id = request.thread_id if request else self._next_thread
         if request is None:
             self._next_thread += 1
-            self.threads[thread_id] = ThreadState()
         event_id = self._next_event
         self._next_event += 1
         event = EdgeEvent(
             event_id, request.root_event_id if request else event_id, thread_id,
             node, slot, old, target, old_consistent,
-            self.is_consistent(node, target, slot), relation, trigger,
+            new_consistent, relation, trigger,
             request.source_event_id if request else None,
             request.depth if request else 0, return_class, return_slots,
             slot in return_slots, background_sweep=self.background_sweep,
         )
-        self.counters[f"{return_class.lower()}_event_count"] += 1
-        self.counters[f"{relation}_selected"] += 1
-        if old_consistent and event.new_is_consistent:
-            self.counters["both_lost_and_created_same_event"] += 1
-        elif old_consistent:
-            self.counters["old_consistency_lost_statistically"] += 1
-        elif event.new_is_consistent:
-            self.counters["new_consistency_created_statistically"] += 1
-        else:
-            self.counters["neither_consistency_change"] += 1
-        self._update_thread(event)
+        if request is not None:
+            self._update_thread(event)
         generated = self._maybe_enqueue(event)
-        event = EdgeEvent(
-            **{
-                **asdict(event),
-                "response_generated": generated,
-                "response_node": event.new_target if generated else None,
-                "response_slot_mode": (
-                    self._slot_mode_for(event.return_class) if generated else None
-                ),
-                "response_target_mode": (
-                    self.policy.response.target_mode if generated else None
-                ),
-                "queue_length_after": len(self.queue),
-            }
+        if request is None and generated:
+            self.threads[thread_id] = ThreadState()
+            self.counters["thread_count"] += 1
+            self._update_thread(event)
+        event = replace(
+            event,
+            response_generated=generated,
+            response_node=event.new_target if generated else None,
+            response_slot_mode=(
+                self._slot_mode_for(event.return_class) if generated else None
+            ),
+            response_target_mode=(
+                self.policy.response.target_mode if generated else None
+            ),
+            queue_length_after=len(self.queue),
         )
-        self.events.append(event)
-        self.counters[f"{trigger}_events"] += 1
+        self.counters["queue_length_sum"] += len(self.queue)
+        self.counters["queue_length_samples"] += 1
         return event
 
     def _groups(self, node: int, slot: int, old: int, excluded: set[int]) -> CandidateGroups:
@@ -334,9 +359,8 @@ class EdgeResponseEngine:
         any_in = set().union(*(self.incoming[s][node] for s in range(SLOT_COUNT)))
         any_in -= excluded
         other = any_in - same
-        global_ = set(range(len(self.targets))) - excluded - any_in
         return CandidateGroups(frozenset(same), frozenset(other),
-                               frozenset(any_in), frozenset(global_))
+                               frozenset(any_in), frozenset(excluded | any_in))
 
     def _select(self, node: int, slot: int, groups: CandidateGroups, mode: str) -> tuple[int | None, str]:
         if mode == "legacy_endogenous":
@@ -346,7 +370,7 @@ class EdgeResponseEngine:
             candidates -= set(self.targets[node]) | {node}
             return self._choice(candidates), "legacy_endogenous"
         if mode == "escape_to_nonincoming" or mode == "uniform_global":
-            return self._choice(groups.non_incoming_global), "global_nonincoming"
+            return self._global_choice(groups.blocked_global), "global_nonincoming"
         prefer_same = mode == "same_slot_incoming_preferred"
         choose_incoming = self.rng.random() < self.policy.selection.p_incoming
         if choose_incoming:
@@ -357,11 +381,20 @@ class EdgeResponseEngine:
                 pool = first or second
                 relation = "same_slot_incoming" if pool is groups.incoming_same_slot else "other_slot_incoming"
                 return self._choice(pool), relation
-        return self._choice(groups.non_incoming_global), "global_nonincoming"
+        return self._global_choice(groups.blocked_global), "global_nonincoming"
 
     def _choice(self, values: Any) -> int | None:
         values = tuple(values)
         return self.rng.choice(values) if values else None
+
+    def _global_choice(self, blocked: frozenset[int]) -> int | None:
+        size = len(self.targets)
+        if len(blocked) >= size:
+            return None
+        while True:
+            candidate = self.rng.randrange(size)
+            if candidate not in blocked:
+                return candidate
 
     def _retarget(self, node: int, slot: int, target: int) -> None:
         old = self.targets[node][slot]
@@ -403,12 +436,16 @@ class EdgeResponseEngine:
     def _process_response(self, request: ResponseRequest) -> None:
         if self.targets[request.incoming_source][request.incoming_slot] != request.node:
             self.counters["responses_obsolete"] += 1
+            self._finalize_thread(request.thread_id, "obsolete")
             return
         slot = self._response_slot(request)
         if slot is None:
+            self._finalize_thread(request.thread_id, "no_slot")
             return
         self.counters["responses_processed"] += 1
-        self._attempt(request.node, slot, "response", request)
+        event = self._attempt(request.node, slot, "response", request)
+        if event is None or not event.response_generated:
+            self._finalize_thread(request.thread_id, "complete")
 
     def _response_slot(self, request: ResponseRequest) -> int | None:
         mode = self._slot_mode_for(request.return_class)
@@ -456,6 +493,32 @@ class EdgeResponseEngine:
         thread.visited_topologies.add(topology)
         thread.slot_sequence.append(event.slot)
         thread.length += 1
+
+    def _finalize_thread(self, thread_id: int, reason: str) -> None:
+        thread = self.threads.pop(thread_id, None)
+        if thread is None:
+            return
+        self.thread_length_histogram[thread.length] += 1
+        self.counters[f"terminated_{reason}"] += 1
+        if thread.closure is not None:
+            self.counters["closed_threads"] += 1
+            self.counters[f"closure_{thread.closure}"] += 1
+        if len(set(thread.slot_sequence)) <= 1:
+            self.counters["same_slot_only_thread_count"] += 1
+        else:
+            self.counters["slot_switch_thread_count"] += 1
+
+    def _histogram_quantile(self, histogram: Counter[int], quantile: float) -> int:
+        total = sum(histogram.values())
+        if total == 0:
+            return 0
+        target = ceil(quantile * total)
+        cumulative = 0
+        for value in sorted(histogram):
+            cumulative += histogram[value]
+            if cumulative >= target:
+                return value
+        return 0
 
     def _local_topology_fingerprint(
         self, source: int, target: int
