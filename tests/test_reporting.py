@@ -46,3 +46,25 @@ def test_heavy_statistics_count_components_and_canonical_cycles(
     assert stats.hexagon_count == 0
     assert stats.component_size_3 == 1
     assert stats.component_size_4_5 == 1
+
+
+def test_heavy_statistics_detect_closed_candidate_scc() -> None:
+    network = RawNetwork(
+        (
+            (1, 2, 1),
+            (0, 2, 0),
+            (0, 1, 0),
+        )
+    )
+
+    stats = heavy_stats(network, 50)
+
+    assert stats.mean_candidate_size == 2
+    assert stats.median_candidate_size == 2
+    assert stats.p90_candidate_size == 2
+    assert stats.max_candidate_size == 2
+    assert stats.candidate_size_2 == 3
+    assert stats.closed_candidate_scc_count == 1
+    assert stats.largest_closed_candidate_scc == 3
+    assert stats.closed_candidate_scc_node_ratio == 1
+    assert stats.closed_candidate_scc_size_3 == 1

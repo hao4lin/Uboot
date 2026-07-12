@@ -10,3 +10,7 @@ rewrites use relation-derived candidates. During a long run it writes step
 progress and the most recent stage statistics to standard error once per minute,
 without an additional scan. Generated CSV, JSON, snapshot, and Markdown files
 belong under the ignored `artifacts/` tree.
+
+Heavy snapshots additionally measure candidate-set sizes and closed strongly
+connected components of the candidate graph. These measurements are derived
+entirely from the heavy snapshot and do not alter or instrument each rewrite.

@@ -36,7 +36,7 @@ def main() -> None:
 
     ordinary_rows: list[dict[str, Any]] = []
     density_history: list[float] = []
-    heavy_rows: list[dict[str, int]] = []
+    heavy_rows: list[dict[str, int | float]] = []
     latest = _record_ordinary(initial, 0, ordinary_rows, density_history)
     latest_heavy = heavy_stats(initial, 0)
     heavy_rows.append(latest_heavy.as_dict())
@@ -220,6 +220,14 @@ or a fixed point.
 - Largest mutual component: {heavy.largest_mutual_component} of N={final.N}.
 - Final duplicate-slot ratio: {final.duplicate_slot_ratio:.12g}.
 - Final maximum mutual degree: {final.max_mutual_degree}.
+- Final candidate size mean/median/p90/max: {heavy.mean_candidate_size:.6g} /
+  {heavy.median_candidate_size:.6g} / {heavy.p90_candidate_size} /
+  {heavy.max_candidate_size}.
+- Closed candidate SCCs: {heavy.closed_candidate_scc_count}; largest size:
+  {heavy.largest_closed_candidate_scc}; node ratio:
+  {heavy.closed_candidate_scc_node_ratio:.12g}.
+- Closed candidate SCC size 2 / size 3 counts:
+  {heavy.closed_candidate_scc_size_2} / {heavy.closed_candidate_scc_size_3}.
 
 Classification: F. unresolved. Turnover and lifetime evidence were deliberately
 not collected because doing so would add statistics-only work to every rewrite.

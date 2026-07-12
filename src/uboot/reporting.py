@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from math import ceil
+from statistics import fmean, median
 
 from uboot.kernel.raw_network import SLOT_COUNT, RawNetwork
 from uboot.observables import mutual_pairs
@@ -43,8 +45,28 @@ class HeavyStats:
     component_size_6_10: int
     component_size_11_50: int
     component_size_gt50: int
+    mean_candidate_size: float
+    median_candidate_size: float
+    p90_candidate_size: int
+    max_candidate_size: int
+    candidate_size_0: int
+    candidate_size_1: int
+    candidate_size_2: int
+    candidate_size_3: int
+    candidate_size_4_5: int
+    candidate_size_6_10: int
+    candidate_size_gt10: int
+    closed_candidate_scc_count: int
+    largest_closed_candidate_scc: int
+    closed_candidate_scc_node_ratio: float
+    closed_candidate_scc_size_1: int
+    closed_candidate_scc_size_2: int
+    closed_candidate_scc_size_3: int
+    closed_candidate_scc_size_4: int
+    closed_candidate_scc_size_5: int
+    closed_candidate_scc_size_6_plus: int
 
-    def as_dict(self) -> dict[str, int]:
+    def as_dict(self) -> dict[str, int | float]:
         return asdict(self)
 
 
@@ -94,6 +116,15 @@ def heavy_stats(network: RawNetwork, step: int) -> HeavyStats:
         adjacency[right].add(left)
 
     sizes = _component_sizes(adjacency)
+    candidates = _candidate_graph(network)
+    candidate_sizes = sorted(len(targets) for targets in candidates)
+    closed_sccs = [
+        component
+        for component in _strongly_connected_components(candidates)
+        if all(candidates[node] <= component for node in component)
+    ]
+    closed_sizes = [len(component) for component in closed_sccs]
+    closed_nodes = sum(closed_sizes)
     return HeavyStats(
         step=step,
         connected_components_excluding_isolates=len(sizes),
@@ -108,7 +139,89 @@ def heavy_stats(network: RawNetwork, step: int) -> HeavyStats:
         component_size_6_10=sum(6 <= size <= 10 for size in sizes),
         component_size_11_50=sum(11 <= size <= 50 for size in sizes),
         component_size_gt50=sum(size > 50 for size in sizes),
+        mean_candidate_size=fmean(candidate_sizes),
+        median_candidate_size=median(candidate_sizes),
+        p90_candidate_size=candidate_sizes[ceil(0.9 * network.size) - 1],
+        max_candidate_size=candidate_sizes[-1],
+        candidate_size_0=sum(size == 0 for size in candidate_sizes),
+        candidate_size_1=sum(size == 1 for size in candidate_sizes),
+        candidate_size_2=sum(size == 2 for size in candidate_sizes),
+        candidate_size_3=sum(size == 3 for size in candidate_sizes),
+        candidate_size_4_5=sum(4 <= size <= 5 for size in candidate_sizes),
+        candidate_size_6_10=sum(6 <= size <= 10 for size in candidate_sizes),
+        candidate_size_gt10=sum(size > 10 for size in candidate_sizes),
+        closed_candidate_scc_count=len(closed_sccs),
+        largest_closed_candidate_scc=max(closed_sizes, default=0),
+        closed_candidate_scc_node_ratio=closed_nodes / network.size,
+        closed_candidate_scc_size_1=sum(size == 1 for size in closed_sizes),
+        closed_candidate_scc_size_2=sum(size == 2 for size in closed_sizes),
+        closed_candidate_scc_size_3=sum(size == 3 for size in closed_sizes),
+        closed_candidate_scc_size_4=sum(size == 4 for size in closed_sizes),
+        closed_candidate_scc_size_5=sum(size == 5 for size in closed_sizes),
+        closed_candidate_scc_size_6_plus=sum(size >= 6 for size in closed_sizes),
     )
+
+
+def _candidate_graph(network: RawNetwork) -> list[set[int]]:
+    incoming = [set[int]() for _ in range(network.size)]
+    for source, targets in enumerate(network.targets):
+        for target in targets:
+            incoming[target].add(source)
+
+    candidates = []
+    for source, targets in enumerate(network.targets):
+        current = set(incoming[source])
+        for neighbor in targets:
+            current.update(network.targets[neighbor])
+        current.discard(source)
+        candidates.append(current)
+    return candidates
+
+
+def _strongly_connected_components(
+    adjacency: list[set[int]],
+) -> list[set[int]]:
+    ordered_adjacency = [tuple(neighbors) for neighbors in adjacency]
+    seen: set[int] = set()
+    finish_order: list[int] = []
+    for root in range(len(adjacency)):
+        if root in seen:
+            continue
+        seen.add(root)
+        stack = [(root, 0)]
+        while stack:
+            node, index = stack[-1]
+            if index < len(ordered_adjacency[node]):
+                neighbor = ordered_adjacency[node][index]
+                stack[-1] = (node, index + 1)
+                if neighbor not in seen:
+                    seen.add(neighbor)
+                    stack.append((neighbor, 0))
+            else:
+                finish_order.append(node)
+                stack.pop()
+
+    reverse = [set[int]() for _ in adjacency]
+    for source, targets in enumerate(adjacency):
+        for target in targets:
+            reverse[target].add(source)
+
+    assigned: set[int] = set()
+    components = []
+    for root in reversed(finish_order):
+        if root in assigned:
+            continue
+        component = {root}
+        assigned.add(root)
+        stack = [root]
+        while stack:
+            node = stack.pop()
+            new = reverse[node] - assigned
+            assigned.update(new)
+            component.update(new)
+            stack.extend(new)
+        components.append(component)
+    return components
 
 
 def _component_sizes(adjacency: list[set[int]]) -> list[int]:
