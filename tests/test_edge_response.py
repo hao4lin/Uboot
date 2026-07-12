@@ -55,3 +55,17 @@ def test_same_return_profile_can_generate_response_events() -> None:
 def test_reserved_candidate_weight_modes_fail_explicitly() -> None:
     with pytest.raises(NotImplementedError):
         SelectionPolicy(candidate_weight_mode="incoming_count")
+
+
+def test_progress_reports_final_active_and_response_state() -> None:
+    rng = Random(13)
+    engine = EdgeResponseEngine(
+        distinct_random_network(20, rng), policy_profile("M1"), rng
+    )
+    reports: list[tuple[int, int, int, int]] = []
+
+    engine.run(2, lambda *values: reports.append(values), progress_check_every=17)
+
+    assert reports[-1][0:2] == (120, 120)
+    assert reports[-1][2] == engine.counters["response_events"]
+    assert reports[-1][3] == 0

@@ -25,5 +25,8 @@ py -m venv .venv
 .venv\Scripts\python experiments\edge_response_batch.py --sizes 20 50 100 --seeds 0 1 2 3 4
 ```
 
+Long edge-response runs report active-slot completion, processed responses, and
+current FIFO length to standard error every 60 seconds, plus final completion.
+
 See `docs/architecture.md`, `docs/iboot-contract.md`, and
 `docs/legacy-inventory.md` before adding simulation behavior.

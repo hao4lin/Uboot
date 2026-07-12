@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, field
 from random import Random
 from statistics import fmean, median
 from math import ceil
-from typing import Any
+from typing import Any, Callable
 
 from uboot.kernel import SLOT_COUNT, RawNetwork
 from uboot.observables import mutual_pair_count
@@ -158,8 +158,15 @@ class EdgeResponseEngine:
         self._next_thread = 1
         self.background_sweep = 0
 
-    def run(self, background_sweeps: int) -> None:
+    def run(
+        self,
+        background_sweeps: int,
+        progress: Callable[[int, int, int, int], None] | None = None,
+        *,
+        progress_check_every: int = 1_024,
+    ) -> None:
         target_attempts = background_sweeps * SLOT_COUNT * len(self.targets)
+        scheduler_actions = 0
         while self.counters["active_attempts"] < target_attempts:
             if self.queue and (
                 self.policy.scheduler_mode == "response_priority"
@@ -169,9 +176,35 @@ class EdgeResponseEngine:
             else:
                 node, slot = self._next_fair_slot()
                 self._attempt(node, slot, "active", None)
+            scheduler_actions += 1
+            if progress is not None and scheduler_actions % progress_check_every == 0:
+                progress(
+                    self.counters["active_attempts"],
+                    target_attempts,
+                    self.counters["response_events"],
+                    len(self.queue),
+                )
         if self.policy.scheduler_mode == "response_priority":
             while self.queue:
                 self._process_response(self.queue.popleft())
+                scheduler_actions += 1
+                if (
+                    progress is not None
+                    and scheduler_actions % progress_check_every == 0
+                ):
+                    progress(
+                        self.counters["active_attempts"],
+                        target_attempts,
+                        self.counters["response_events"],
+                        len(self.queue),
+                    )
+        if progress is not None:
+            progress(
+                self.counters["active_attempts"],
+                target_attempts,
+                self.counters["response_events"],
+                len(self.queue),
+            )
 
     def snapshot(self) -> RawNetwork:
         return RawNetwork(tuple(tuple(row) for row in self.targets))  # type: ignore[arg-type]

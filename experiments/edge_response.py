@@ -8,6 +8,8 @@ from dataclasses import asdict
 import json
 from pathlib import Path
 from random import Random
+import sys
+from time import monotonic
 from typing import Any
 
 from uboot.edge_response import EdgeResponseEngine, distinct_random_network, policy_profile
@@ -71,7 +73,27 @@ def main() -> None:
     rng = Random(args.seed)
     engine = EdgeResponseEngine(distinct_random_network(args.N, rng),
                                 policy_profile(args.profile, **overrides), rng)
-    engine.run(args.background_sweeps)
+    last_progress = monotonic()
+
+    def report_progress(
+        completed: int, total: int, responses: int, queue_length: int
+    ) -> None:
+        nonlocal last_progress
+        now = monotonic()
+        finished = completed == total and queue_length == 0
+        if now - last_progress < 60 and not finished:
+            return
+        percent = 100.0 if total == 0 else 100 * completed / total
+        print(
+            f"progress: {percent:6.2f}% "
+            f"({completed}/{total} active slots) "
+            f"responses={responses} queue={queue_length}",
+            file=sys.stderr,
+            flush=True,
+        )
+        last_progress = now
+
+    engine.run(args.background_sweeps, report_progress)
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
     summary = {"profile": args.profile, "N": args.N, "seed": args.seed,
