@@ -1,7 +1,7 @@
 {
   "model_name": "M2_endogenous_candidate_baseline",
   "model_version": "1.0.0",
-  "git_commit": "5ba92c7ee2499cbbc0b01cc310617de82d9e0411",
+  "git_commit": "d6f859bc02d579873a75869307c40e55c14e2ec3",
   "git_tag": "m2-generation-baseline-v1",
   "python_version": "3.13.5",
   "platform": "Windows",

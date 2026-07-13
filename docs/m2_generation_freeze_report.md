@@ -4,7 +4,7 @@ The immutable baseline is `M2_endogenous_candidate_baseline` version `1.0.0`,
 with candidate rule `IN union OUT2 - self`, the bounded cross-tick response
 scheduler, and deterministic checkpoint serialization. The release tag is
 `m2-generation-baseline-v1`; the commit and generated checkpoint evidence are
-`5ba92c7ee2499cbbc0b01cc310617de82d9e0411`.
+`d6f859bc02d579873a75869307c40e55c14e2ec3`.
 
 The required warmup artifact is
 `artifacts/checkpoints/m2_generation_baseline_v1/N1000_seed20260712_w1_s60000`.
