@@ -1,0 +1,21 @@
+{
+  "model_name": "M2_endogenous_candidate_baseline",
+  "model_version": "1.0.0",
+  "git_commit": "5ba92c7ee2499cbbc0b01cc310617de82d9e0411",
+  "git_tag": "m2-generation-baseline-v1",
+  "python_version": "3.13.5",
+  "platform": "Windows",
+  "seed": 20260712,
+  "N": 1000,
+  "worker_count": 1,
+  "candidate_rule": "endogenous_in_out2",
+  "queue_capacity": 1024,
+  "queue_policy": "reject",
+  "checkpoint_sweep": 60000,
+  "tick": 180000000,
+  "test_result": "59 passed; ruff passed",
+  "state_hash": "da8a48ac23f7b716ace39a32ad1e63d6232c5d4e295a2f13325fb17635d294f3",
+  "rng_hash": "resolved in generated checkpoint state",
+  "config": {"profile": "M2", "stats": false, "warmup_checkpoint_format": "legacy_pre_incoming_layout_fix"},
+  "created_at": "2026-07-12T00:00:00-04:00"
+}

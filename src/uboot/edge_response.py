@@ -12,6 +12,10 @@ from uboot.candidate_graph import get_current_candidate_targets
 from uboot.kernel import SLOT_COUNT, RawNetwork
 from uboot.snapshot_lineage import histogram_bucket, layered_topology_stats
 
+M2_BASELINE_MODEL_NAME = "M2_endogenous_candidate_baseline"
+M2_BASELINE_MODEL_VERSION = "1.0.0"
+M2_BASELINE_GIT_TAG = "m2-generation-baseline-v1"
+
 
 @dataclass(frozen=True, slots=True)
 class SelectionPolicy:
@@ -210,11 +214,16 @@ class EdgeResponseEngine:
             for task_id, task in sorted(self.threads.items())
         )
         return (
+            M2_BASELINE_MODEL_VERSION,
             self.candidate_rule,
             tuple(tuple(row) for row in self.targets),
             tuple(self.workers),
             tuple(self.queue),
             tasks,
+            self._next_task,
+            tuple(self._fair_ring),
+            self._fair_index,
+            self.background_sweep,
             self.tick,
             self.rng.getstate(),
         )
