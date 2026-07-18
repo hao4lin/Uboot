@@ -163,3 +163,49 @@ zero denominator is reported as `N/A`. Because the historical N=100 output has
 no event log or intermediate checkpoint, its old descending snapshots remain
 valid for snapshot-only continuation evidence, while update counts come from the
 new same-process replay and its paired snapshots.
+
+## Two-snapshot pair-triangle microtrace
+
+`pair_triangle_microtrace.py` analyzes exactly one S0-to-S1 interval. It calls
+the frozen engine's existing `step_tick()` from an outer wrapper and classifies
+the closed pair/triple state after every completed tick. The existing optional
+update observer only collects committed active/response retarget details inside
+that tick. It does not return a control value, call the RNG, or mutate engine
+state.
+
+N=100 adjacent interval selected from the paired touch replay:
+
+```powershell
+.venv\Scripts\python experiments\pair_triangle_microtrace.py `
+  --N 100 --seed 20260712 --warmup-sweeps 4220 `
+  --snapshot-interval-sweeps 10 `
+  --start-snapshot-id 422 --end-snapshot-id 423 `
+  --pair-ids 4 83 --triangle-ids 12 32 48 `
+  --snapshot-dir artifacts\joint_touch_replay_n100_v3 `
+  --output-dir artifacts\microtrace_n100_s422_s423
+```
+
+N=1000 adjacent interval from the frozen 60,000-sweep checkpoint:
+
+```powershell
+.venv\Scripts\python experiments\pair_triangle_microtrace.py `
+  --root-checkpoint artifacts\checkpoints\m2_generation_baseline_v1\N1000_seed20260712_w1_s60000 `
+  --snapshot-interval-sweeps 1 `
+  --start-snapshot-id 0 --end-snapshot-id 1 `
+  --pair-ids 616 629 --triangle-ids 602 979 993 `
+  --snapshot-dir artifacts\joint_touch_replay_n1000_v1 `
+  --output-dir artifacts\microtrace_n1000_s0_s1
+```
+
+The default `structure-only` detail writes only touched or recognition-changing
+ticks to the event CSV, while the summary still counts every atomic tick. Use
+`--write-all-atomic-events` or `--event-detail-level all` only for a deliberately
+small interval; `--max-event-rows` bounds detail output. Consecutive identical
+micro states are always run-length encoded in the state-runs CSV.
+
+Every run executes the interval twice: once directly and once with microtrace.
+It refuses output unless start/final dynamics hashes, final tick, RNG state,
+counters, raw targets, response aggregates, phase-two readiness, and complete
+pair/triple static signatures agree. When `--snapshot-dir` is supplied, the
+requested endpoint ticks and selected object memberships must also match the
+saved snapshots.
