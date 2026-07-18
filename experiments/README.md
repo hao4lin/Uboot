@@ -55,3 +55,11 @@ experiment: it compares only global random replacement, direct same-slot
 returner-first selection, and an old/new reciprocal-status comparison. It has no
 strength, reward, closure, promotion, identity, lock, or score path. R/Q graphs,
 state transitions, relation ages, and component episodes are passive outputs.
+
+`baseline_relation_transformation_trace.py` observes a small, independently
+sampled anchor set in `baseline_random_replace`. Snapshot/atom indices are stored
+only as source locators. Slice identities, undirected same/different
+transformations, canonical equivalence groups, and chordless paths of two to four
+edges use relation content only; missing exposure has no disappearance or chain
+meaning. Increase anchor count only after checking output size and path-building
+cost at a smaller K.

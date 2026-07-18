@@ -294,11 +294,17 @@ def initial_network(size: int, rng: Random) -> RawNetwork:
 
 
 def run_baseline_reference(
-    *, size: int, seed: int, sweeps: int
+    *,
+    size: int,
+    seed: int,
+    sweeps: int,
+    progress: Callable[[int, int], None] | None = None,
+    progress_check_every: int = 16_384,
 ) -> tuple[RawNetwork, object]:
     rng = Random(seed)
     targets = [list(row) for row in initial_network(size, rng).targets]
-    for _ in range(sweeps * SLOT_COUNT * size):
+    total_ticks = sweeps * SLOT_COUNT * size
+    for tick in range(1, total_ticks + 1):
         node = rng.randrange(size)
         slot = rng.randrange(SLOT_COUNT)
         blocked = {
@@ -309,6 +315,10 @@ def run_baseline_reference(
             candidate for candidate in range(size) if candidate not in blocked
         )
         targets[node][slot] = rng.choice(legal)
+        if progress is not None and tick % progress_check_every == 0:
+            progress(tick, total_ticks)
+    if progress is not None:
+        progress(total_ticks, total_ticks)
     network = RawNetwork(tuple(tuple(row) for row in targets))  # type: ignore[arg-type]
     return network, rng.getstate()
 

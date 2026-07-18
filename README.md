@@ -27,6 +27,7 @@ py -m venv .venv
 .venv\Scripts\python experiments\m2_generation_run.py --help
 .venv\Scripts\python experiments\edge_policy_compare.py --help
 .venv\Scripts\python experiments\minimal_edge_rule_compare.py --help
+.venv\Scripts\python experiments\baseline_relation_transformation_trace.py --help
 ```
 
 Long edge-response runs report active-slot completion, processed responses, and
