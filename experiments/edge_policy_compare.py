@@ -190,6 +190,8 @@ def _comparison_report(results: tuple[PolicyRunResult, ...]) -> str:
         "internal_relation_count",
         "external_slot_change_rate",
         "same_node_external_change_rate_after_internal",
+        "responses_rejected_total",
+        "max_queue_depth",
         "L_max_component",
         "strength_midrange_ratio",
         "total_score",
@@ -301,7 +303,9 @@ def _hard_answer(row: dict[str, Any] | None) -> str:
     return (
         f"internal relations={row['internal_relation_count']}, "
         f"L max component={row['L_max_component']}/{row['N']}, "
-        f"overhard penalty={row['overhard_penalty']}."
+        f"overhard penalty={row['overhard_penalty']}, "
+        f"response rejects={row['responses_rejected_total']}, "
+        f"max queue={row['max_queue_depth']}."
     )
 
 
