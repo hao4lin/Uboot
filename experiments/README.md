@@ -115,3 +115,51 @@ altering source files; ambiguity or structural overlap stops only that direction
 
 The generated `snapshot_id` is the absolute engine tick within one checkpoint
 lineage. Raw snapshot spacing is an index interval, not physical time.
+
+## Joint movement-touch diagnostics
+
+`joint_touch_replay.py` passively observes active selections and actual retarget
+events while reusing `phase2.snapshot_state` for the paired snapshots. It writes
+`joint_fixed_point_update_touches.csv`, compatible phase-two system/object
+snapshots, and a manifest with start/final dynamics hashes. The observer is not
+part of the engine state and does not consume RNG values.
+
+Exact N=1000 replay from the frozen checkpoint:
+
+```powershell
+.venv\Scripts\python experiments\joint_touch_replay.py `
+  --checkpoint artifacts\checkpoints\m2_generation_baseline_v1\N1000_seed20260712_w1_s60000 `
+  --tracking-sweeps 1000 --snapshot-interval-sweeps 1 `
+  --start-snapshot-id 0 --pair-ids 616 629 `
+  --triangle-ids 602 979 993 `
+  --output-dir artifacts\joint_touch_replay_n1000
+```
+
+N=100 same-configuration rerun from initialization:
+
+```powershell
+.venv\Scripts\python experiments\joint_touch_replay.py `
+  --N 100 --seed 20260712 --warmup-sweeps 4220 `
+  --tracking-sweeps 5780 --snapshot-interval-sweeps 10 `
+  --start-snapshot-id 422 --pair-ids 4 83 `
+  --triangle-ids 12 32 48 `
+  --output-dir artifacts\joint_touch_replay_n100
+```
+
+Analyze either paired replay without rewriting the continuation tracker:
+
+```powershell
+.venv\Scripts\python experiments\joint_pair_triangle_continuation.py `
+  --input-dir artifacts\joint_touch_replay_n1000 `
+  --start-snapshot-id 0 --pair-ids 616 629 `
+  --triangle-ids 602 979 993 `
+  --touch-observations artifacts\joint_touch_replay_n1000\joint_fixed_point_update_touches.csv `
+  --output-dir artifacts\joint_diagnostics_n1000
+```
+
+This adds `joint_fixed_point_track_diagnostics.csv`, the movement-only
+`joint_fixed_point_movement_events.csv`, and JSON/Markdown touch summaries. A
+zero denominator is reported as `N/A`. Because the historical N=100 output has
+no event log or intermediate checkpoint, its old descending snapshots remain
+valid for snapshot-only continuation evidence, while update counts come from the
+new same-process replay and its paired snapshots.

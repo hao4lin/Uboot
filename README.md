@@ -25,6 +25,7 @@ py -m venv .venv
 .venv\Scripts\python experiments\edge_response_batch.py --sizes 20 50 100 --seeds 0 1 2 3 4
 .venv\Scripts\python experiments\m2_incremental_history.py --help
 .venv\Scripts\python experiments\joint_pair_triangle_continuation.py --help
+.venv\Scripts\python experiments\joint_touch_replay.py --help
 ```
 
 Long edge-response runs report active-slot completion, processed responses, and
@@ -40,4 +41,4 @@ See `docs/architecture.md`, `docs/iboot-contract.md`, and
 `docs/legacy-inventory.md` before adding simulation behavior.
 
 See `experiments/README.md` for resumable short-chunk M2 history generation and
-offline joint closed-pair/closed-triple continuation analysis.
+joint closed-pair/closed-triple continuation and update-touch diagnostics.

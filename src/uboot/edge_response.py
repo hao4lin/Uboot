@@ -18,6 +18,16 @@ M2_BASELINE_GIT_TAG = "m2-generation-baseline-v1"
 
 
 @dataclass(frozen=True, slots=True)
+class EngineUpdateEvent:
+    tick: int
+    event_kind: str
+    source: int
+    slot: int
+    previous_target: int
+    target: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class SelectionPolicy:
     p_incoming: float = 0.95
     p_same_slot_given_incoming: float = 1 / 3
@@ -107,6 +117,7 @@ class EdgeResponseEngine:
         enable_response_histograms: bool = False,
         mode: str | None = None,
         candidate_rule: str = "incoming_excluding_out",
+        update_observer: Callable[[EngineUpdateEvent], None] | None = None,
     ):
         if network.size < 4:
             raise ValueError("edge-response experiments require N >= 4")
@@ -125,6 +136,7 @@ class EdgeResponseEngine:
         self.rng = rng
         self.mode = mode or ("M0" if not _response_probability(policy.response) else "M1")
         self.candidate_rule = candidate_rule
+        self.update_observer = update_observer
         self.worker_count = worker_count
         self.response_queue_capacity = response_queue_capacity
         self.response_queue_policy = response_queue_policy
@@ -293,6 +305,8 @@ class EdgeResponseEngine:
 
     def _active_update(self, node: int, slot: int) -> None:
         self.active_attempts[node][slot] += 1
+        old = self.targets[node][slot]
+        self._observe_update("active_attempt", node, slot, old, None)
         if self.mode == "M0":
             target = self._m0_target(node, slot)
         else:
@@ -300,8 +314,7 @@ class EdgeResponseEngine:
         if target is None:
             self.counters["active_no_candidate"] += 1
             return
-        old = self.targets[node][slot]
-        self._retarget(node, slot, target)
+        self._retarget(node, slot, target, event_kind="active_retarget")
         self.counters["active_updates"] += 1
         if self.mode == "M1":
             self._create_response(node, slot, old, target)
@@ -401,7 +414,7 @@ class EdgeResponseEngine:
             self._finish_worker(worker_id, "absorbed")
             return
         source = task.current_node
-        self._retarget(source, slot, target)
+        self._retarget(source, slot, target, event_kind="response_retarget")
         task.hop_count += 1
         task.chain_length += 1
         return_slots = tuple(
@@ -505,11 +518,34 @@ class EdgeResponseEngine:
             return "NO_RETURN"
         return "SAME_RETURN" if returns[0] == slot else "OTHER_RETURN"
 
-    def _retarget(self, node: int, slot: int, target: int) -> None:
+    def _retarget(
+        self, node: int, slot: int, target: int, *, event_kind: str
+    ) -> None:
         old = self.targets[node][slot]
         self.incoming[slot][old].remove(node)
         self.incoming[slot][target].add(node)
         self.targets[node][slot] = target
+        self._observe_update(event_kind, node, slot, old, target)
+
+    def _observe_update(
+        self,
+        event_kind: str,
+        source: int,
+        slot: int,
+        previous_target: int,
+        target: int | None,
+    ) -> None:
+        if self.update_observer is not None:
+            self.update_observer(
+                EngineUpdateEvent(
+                    self.tick,
+                    event_kind,
+                    source,
+                    slot,
+                    previous_target,
+                    target,
+                )
+            )
 
     def _consistent_pairs(self, slot: int) -> set[tuple[int, int]]:
         return {

@@ -12,6 +12,11 @@ from uboot.joint_continuation import (
     track_joint_continuation,
     write_joint_result,
 )
+from uboot.joint_diagnostics import (
+    build_diagnostics,
+    load_touch_observations,
+    write_diagnostics,
+)
 
 
 def main() -> None:
@@ -24,6 +29,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=20260718)
     parser.add_argument("--max-auto-attempts", type=int, default=100)
     parser.add_argument("--max-god-slices", type=int)
+    parser.add_argument("--touch-observations", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     if args.auto_select_candidate == bool(args.pair_ids or args.triangle_ids):
@@ -67,9 +73,18 @@ def main() -> None:
         "seed": args.seed,
         "max_auto_attempts": args.max_auto_attempts,
         "max_god_slices": args.max_god_slices,
+        "touch_observations": str(args.touch_observations.resolve())
+        if args.touch_observations
+        else None,
     }
     summary = write_joint_result(
         result, args.output_dir, config=config, attempts=attempts
+    )
+    diagnostics = build_diagnostics(
+        series, result, load_touch_observations(args.touch_observations)
+    )
+    summary["touch_diagnostics"] = write_diagnostics(
+        diagnostics, args.output_dir
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
 
