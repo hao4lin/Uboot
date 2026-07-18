@@ -39,3 +39,12 @@ checkpoints belong to the archived invalid branch; use a new output directory.
 the corrected scan identifies a suitable boundary. It reports progress to
 standard error and rejects any duplicate target before saving. Checkpoint loading
 also rejects version-1 metadata and duplicate-target payloads.
+
+## Independent edge-policy comparison
+
+`edge_policy_compare.py` leaves the corrected M2 baseline engine unchanged and
+compares it with five slot-local edge retention policies. New policies use an
+independent deterministic policy RNG and report strict reciprocal (Q),
+high-strength (S), promoted-internal (L), and historical candidate-graph (C)
+statistics separately. Output directories must be new; generated tables and
+optional relation-event logs remain under ignored `artifacts/` paths.

@@ -25,6 +25,7 @@ py -m venv .venv
 .venv\Scripts\python experiments\edge_response_batch.py --sizes 20 50 100 --seeds 0 1 2 3 4
 .venv\Scripts\python experiments\m2_fragmentation_scaling_scan.py --help
 .venv\Scripts\python experiments\m2_generation_run.py --help
+.venv\Scripts\python experiments\edge_policy_compare.py --help
 ```
 
 Long edge-response runs report active-slot completion, processed responses, and
