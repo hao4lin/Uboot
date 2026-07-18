@@ -69,3 +69,9 @@ slice metadata and produces four reproducible diagnostic groups: balanced
 anchor/type samples, neighbor edges of the ten highest-degree slices, edges
 whose shared raw members exclude every tracked anchor, and the complete bounded
 `MEMBERS_SAME_RELATION_DIFFERENT` group. Sampling never uses CSV row order.
+
+`baseline_adaptive_relation_trace.py` treats the unchanged random Baseline as an
+exactly replayable recording. Full RNG/network checkpoints and a compact update
+impact index support pure on-demand pair, radius-one anchor, and three-member
+slices. Non-monotone interval refinement inspects relevant commits even when
+coarse endpoints match, and resource exhaustion is always explicit.
