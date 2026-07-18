@@ -48,3 +48,10 @@ independent deterministic policy RNG and report strict reciprocal (Q),
 high-strength (S), promoted-internal (L), and historical candidate-graph (C)
 statistics separately. Output directories must be new; generated tables and
 optional relation-event logs remain under ignored `artifacts/` paths.
+
+The strength/promotion comparison above is now historical and receives no
+further implementation. `minimal_edge_rule_compare.py` is the active independent
+experiment: it compares only global random replacement, direct same-slot
+returner-first selection, and an old/new reciprocal-status comparison. It has no
+strength, reward, closure, promotion, identity, lock, or score path. R/Q graphs,
+state transitions, relation ages, and component episodes are passive outputs.
