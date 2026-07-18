@@ -63,3 +63,9 @@ transformations, canonical equivalence groups, and chordless paths of two to fou
 edges use relation content only; missing exposure has no disappearance or chain
 meaning. Increase anchor count only after checking output size and path-building
 cost at a smaller K.
+
+`sample_relation_transformations.py` joins the transformation table back to its
+slice metadata and produces four reproducible diagnostic groups: balanced
+anchor/type samples, neighbor edges of the ten highest-degree slices, edges
+whose shared raw members exclude every tracked anchor, and the complete bounded
+`MEMBERS_SAME_RELATION_DIFFERENT` group. Sampling never uses CSV row order.
