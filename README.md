@@ -27,6 +27,7 @@ py -m venv .venv
 .venv\Scripts\python experiments\joint_pair_triangle_continuation.py --help
 .venv\Scripts\python experiments\joint_touch_replay.py --help
 .venv\Scripts\python experiments\pair_triangle_microtrace.py --help
+.venv\Scripts\python experiments\fixed_point_exposure_trace.py --help
 ```
 
 Long edge-response runs report active-slot completion, processed responses, and
@@ -44,3 +45,6 @@ See `docs/architecture.md`, `docs/iboot-contract.md`, and
 See `experiments/README.md` for resumable short-chunk M2 history generation and
 joint closed-pair/closed-triple continuation, update-touch diagnostics, and
 non-invasive two-snapshot microtracing.
+The same guide also documents fixed-point exposure tracing, which keeps stable
+analysis-only object IDs and follows exposed raw slots, direct object links, and
+detailed two-hop paths after every atomic update.
