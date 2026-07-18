@@ -24,6 +24,10 @@ def main() -> None:
     parser.add_argument("--background-sweeps", type=int, default=1_000)
     parser.add_argument("--snapshot-interval-sweeps", type=int, default=100)
     parser.add_argument("--worker-count", type=int, default=1)
+    parser.add_argument(
+        "--candidate-rule",
+        choices=["incoming_excluding_out", "endogenous_in_out2"],
+    )
     parser.add_argument("--response-queue-capacity", type=int, default=1024)
     parser.add_argument(
         "--response-queue-policy", choices=["reject", "drop_oldest"], default="reject"
@@ -98,6 +102,10 @@ def main() -> None:
         enable_worker_stats=args.enable_worker_stats,
         enable_response_histograms=args.enable_response_histograms,
         mode="M0" if args.profile == "M0" else "M1",
+        candidate_rule=(
+            args.candidate_rule
+            or ("endogenous_in_out2" if args.profile == "M2" else "incoming_excluding_out")
+        ),
     )
     last_progress = monotonic()
     snapshot_interval = args.snapshot_interval_sweeps * 3 * args.N
@@ -196,6 +204,7 @@ def main() -> None:
         "N": args.N,
         "seed": args.seed,
         "background_sweeps": args.background_sweeps,
+        "candidate_rule": engine.candidate_rule,
         "final_state_hash": sha256(repr(engine.dynamics_state()).encode()).hexdigest(),
         **engine.summary(),
     }

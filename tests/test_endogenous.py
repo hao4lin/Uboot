@@ -13,6 +13,8 @@ def test_raw_network_requires_three_non_self_targets() -> None:
         RawNetwork(((1, 1), (0, 0)))  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="cannot point to themselves"):
         RawNetwork(((0, 1, 1), (0, 0, 0)))
+    with pytest.raises(ValueError, match="three distinct objects"):
+        RawNetwork(((1, 1, 2), (0, 2, 3), (0, 1, 3), (0, 1, 2)))
 
 
 def test_random_initialization_is_seeded_and_preserves_invariants() -> None:
@@ -22,37 +24,45 @@ def test_random_initialization_is_seeded_and_preserves_invariants() -> None:
     assert first == second
     assert all(len(slots) == 3 for slots in first.targets)
     assert all(source not in slots for source, slots in enumerate(first.targets))
+    assert all(len(set(slots)) == 3 for slots in first.targets)
 
 
 def test_candidates_are_only_incoming_or_two_hop_relations() -> None:
     network = RawNetwork(
         (
-            (1, 1, 1),
-            (2, 2, 2),
-            (0, 3, 3),
-            (1, 1, 1),
+            (1, 2, 3),
+            (0, 4, 5),
+            (0, 4, 5),
+            (0, 4, 5),
+            (1, 2, 3),
+            (1, 2, 3),
         )
     )
 
-    assert endogenous_candidates(network, 0) == frozenset({2})
+    assert endogenous_candidates(network, 0) == frozenset({1, 2, 3, 4, 5})
 
 
 def test_rewrite_uses_endogenous_candidate_without_mutating_input() -> None:
     network = RawNetwork(
         (
-            (1, 1, 1),
-            (2, 2, 2),
-            (0, 3, 3),
-            (1, 1, 1),
+            (1, 2, 3),
+            (0, 4, 5),
+            (0, 4, 5),
+            (0, 4, 5),
+            (1, 2, 3),
+            (1, 2, 3),
         )
     )
     result = rewrite_once(network, Random(2))
 
     assert result.source == 0
-    assert result.target == 2
-    assert result.candidate_count == 1
-    assert network.targets[0] == (1, 1, 1)
-    assert result.network.targets[0][result.slot] == 2
+    assert result.target is not None
+    assert result.target not in {
+        target for index, target in enumerate(network.targets[0]) if index != result.slot
+    }
+    assert result.candidate_count == 3
+    assert network.targets[0] == (1, 2, 3)
+    assert len(set(result.network.targets[0])) == 3
 
 
 def test_empty_candidate_is_a_no_op(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -69,13 +79,17 @@ def test_empty_candidate_is_a_no_op(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.candidate_count == 0
 
 
-def test_mutual_pairs_ignore_slot_labels_and_duplicate_slots() -> None:
+def test_mutual_pairs_ignore_slot_labels_with_distinct_slots() -> None:
     network = RawNetwork(
         (
-            (1, 1, 2),
-            (0, 2, 2),
-            (3, 3, 3),
-            (2, 2, 2),
+            (1, 4, 5),
+            (0, 4, 5),
+            (3, 6, 7),
+            (2, 6, 7),
+            (2, 3, 6),
+            (2, 3, 7),
+            (0, 1, 5),
+            (0, 1, 4),
         )
     )
 

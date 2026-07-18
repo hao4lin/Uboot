@@ -26,6 +26,8 @@ class RawNetwork:
                     raise ValueError("slot target is outside the network")
                 if target == source:
                     raise ValueError("raw objects cannot point to themselves")
+            if len(set(slots)) != SLOT_COUNT:
+                raise ValueError("each raw object must target three distinct objects")
 
     @property
     def size(self) -> int:
@@ -53,15 +55,10 @@ class RawNetwork:
 def random_network(size: int, rng: Random) -> RawNetwork:
     """Create the sole exogenous phase: uniform random initial directions."""
 
-    if size < 2:
-        raise ValueError("a raw network requires at least two objects")
+    if size <= SLOT_COUNT:
+        raise ValueError("a three-slot raw network requires at least four objects")
     targets = tuple(
-        tuple(_other_object(source, size, rng) for _ in range(SLOT_COUNT))
+        tuple(rng.sample([target for target in range(size) if target != source], SLOT_COUNT))
         for source in range(size)
     )
     return RawNetwork(targets)  # type: ignore[arg-type]
-
-
-def _other_object(source: int, size: int, rng: Random) -> int:
-    target = rng.randrange(size - 1)
-    return target + (target >= source)

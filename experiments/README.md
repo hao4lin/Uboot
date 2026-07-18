@@ -20,3 +20,22 @@ Each occupied worker advances at most once before one active-slot update; newly
 created tasks cannot advance until the next tick. Its snapshot candidate graph
 is the exact direct-candidate function used by M1 selection, not the older
 relation-endogenous `IN + OUT2` graph. M0 bypasses this response system.
+
+## Corrected M2 rebuild
+
+M2 uses the object-level relation `C(i) = (IN(i) union OUT2(i)) - {i}`. For a
+specific slot, the two targets occupied by the other slots are removed while the
+slot's own old target remains eligible. This preserves three pairwise-distinct
+targets without forcing every attempted update to change state. Active and
+response execution share the filter; response execution also removes its
+incoming source. There is no global fallback.
+
+`m2_fragmentation_scaling_scan.py` is the first replacement-data entry point.
+It fails immediately on a target-uniqueness violation and writes the violation
+count and duplicate-slot ratio at each checkpoint. Version-1 artifact paths and
+checkpoints belong to the archived invalid branch; use a new output directory.
+
+`m2_generation_run.py` generates a fresh deterministic warm-up checkpoint after
+the corrected scan identifies a suitable boundary. It reports progress to
+standard error and rejects any duplicate target before saving. Checkpoint loading
+also rejects version-1 metadata and duplicate-target payloads.

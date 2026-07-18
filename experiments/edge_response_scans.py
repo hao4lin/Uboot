@@ -146,7 +146,9 @@ def _summary_row(summary: dict, runtime: float) -> dict:
         "N": summary["N"],
         "final_tick": summary["tick"],
         "final_state_hash": summary["final_state_hash"],
-        "mutual_pair_density": summary["mutual_pair_density"],
+        "all_mutual_pair_density_per_slot": summary[
+            "all_mutual_pair_density_per_slot"
+        ],
         "responses_created": summary.get("responses_created_total", 0),
         "responses_completed": summary.get("responses_completed_total", 0),
         "responses_rejected": summary.get("responses_rejected_total", 0),

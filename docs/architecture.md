@@ -22,6 +22,12 @@ After initialization there is no global random target fallback. IDs and slot
 indices are operational handles, not object-visible types. Mutual connection is
 a passive observable and ignores slot-number alignment.
 
+Candidate deduplication is separate from the raw state invariant: every object
+always has three pairwise-distinct non-self targets. During a slot update, the
+other two slots' targets are blocked while the updating slot's own old target may
+remain eligible. Construction, execution, snapshots, and checkpoint loading all
+enforce this invariant.
+
 Time is reported only in steps. One step independently samples one object and
 one of its slots, then attempts at most one rewrite. The main density observable
 is `2M / (3N)`, where `M` is the number of unordered mutually pointing object

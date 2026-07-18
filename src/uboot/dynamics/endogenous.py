@@ -34,7 +34,7 @@ def rewrite_once(network: RawNetwork, rng: Random) -> Rewrite:
 
     source = rng.randrange(network.size)
     slot = rng.randrange(SLOT_COUNT)
-    candidates = endogenous_candidates(network, source)
+    candidates = _executable_candidates(network.targets, source, slot)
     if not candidates:
         return Rewrite(network, source, slot, network.targets[source][slot], None, 0)
     target = rng.choice(tuple(candidates))
@@ -110,6 +110,11 @@ class EndogenousEngine:
             if target != source
         )
         candidates.discard(source)
+        candidates.difference_update(
+            target
+            for index, target in enumerate(self.targets[source])
+            if index != slot
+        )
         if not candidates:
             return False
 
@@ -129,3 +134,13 @@ class EndogenousEngine:
 
     def snapshot(self) -> RawNetwork:
         return RawNetwork(tuple(tuple(slots) for slots in self.targets))  # type: ignore[arg-type]
+
+
+def _executable_candidates(
+    targets: tuple[tuple[int, int, int], ...], source: int, slot: int
+) -> frozenset[int]:
+    candidates = set(endogenous_candidates(RawNetwork(targets), source))
+    candidates.difference_update(
+        target for index, target in enumerate(targets[source]) if index != slot
+    )
+    return frozenset(candidates)
