@@ -244,9 +244,10 @@ def trace_commit_centered(
     if not local_windows or tuple(sorted(set(local_windows))) != local_windows:
         raise ValueError("local windows must be unique and increasing")
     cases: list[CommitCenteredCase] = []
-    candidate_status = []
+    plans: list[tuple[TraceCandidate, tuple[PrimaryChange, ...], bool]] = []
+    candidate_status: list[tuple[str, str]] = []
     replay_start = oracle.replayed_atom_count
-    for index, candidate in enumerate(candidates, start=1):
+    for candidate in candidates:
         primaries, primary_incomplete = locate_primary_changes(
             oracle, candidate, max_commits=max_primary_commits_per_candidate
         )
@@ -255,28 +256,38 @@ def trace_commit_centered(
             if primary_incomplete
             else "COMPLETE"
         )
+        plans.append((candidate, primaries, primary_incomplete))
         candidate_status.append((candidate.candidate_id, status))
-        projected = oracle.replay_cost_for_commits(
-            primary.commit_locator for primary in primaries
+
+    all_primaries = tuple(
+        primary for _, primaries, _ in plans for primary in primaries
+    )
+    projected = oracle.replay_cost_for_commits(
+        primary.commit_locator for primary in all_primaries
+    )
+    if oracle.replayed_atom_count - replay_start + projected > max_total_replay_atoms:
+        limited = tuple(
+            (candidate.candidate_id, "INCOMPLETE_RESOURCE_LIMIT_TOTAL_REPLAY")
+            for candidate in candidates
         )
-        if oracle.replayed_atom_count - replay_start + projected > max_total_replay_atoms:
-            candidate_status[-1] = (
-                candidate.candidate_id,
-                "INCOMPLETE_RESOURCE_LIMIT_TOTAL_REPLAY",
-            )
-            if progress is not None:
-                progress(index, len(candidates), candidate.candidate_id, candidate_status[-1][1])
-            continue
-        batch_start = oracle.replayed_atom_count
-        transitions = oracle.inspect_commit_sequence(
-            (primary.commit_locator for primary in primaries),
-            _candidate_query(candidate),
-        )
-        batch_cost = oracle.replayed_atom_count - batch_start
-        base_cost, extra_cost = divmod(batch_cost, max(1, len(primaries)))
-        for case_index, (primary, transition) in enumerate(
-            zip(primaries, transitions)
-        ):
+        return CommitCenteredTraceResult((), limited)
+    batch_start = oracle.replayed_atom_count
+    transitions = oracle.inspect_commit_sequence(
+        (primary.commit_locator for primary in all_primaries),
+        PairSliceQuery(0, 1),
+    )
+    transitions_by_locator = {
+        transition.details.commit_locator: transition for transition in transitions
+    }
+    batch_cost = oracle.replayed_atom_count - batch_start
+    base_cost, extra_cost = divmod(batch_cost, max(1, len(all_primaries)))
+    global_case_index = 0
+
+    for index, (candidate, primaries, primary_incomplete) in enumerate(
+        plans, start=1
+    ):
+        for primary in primaries:
+            transition = transitions_by_locator[primary.commit_locator]
             support_rows, support_incomplete = _support_candidate_rows(
                 transition.before_state.network,
                 transition.after_state.network,
@@ -324,19 +335,19 @@ def trace_commit_centered(
                     window,
                     not boundary_incomplete,
                     resource_status,
-                    base_cost + (case_index < extra_cost),
+                    base_cost + (global_case_index < extra_cost),
                     1 + len(changes),
                 )
             )
+            global_case_index += 1
         if progress is not None:
-            progress(index, len(candidates), candidate.candidate_id, status)
+            progress(
+                index,
+                len(candidates),
+                candidate.candidate_id,
+                candidate_status[index - 1][1],
+            )
     return CommitCenteredTraceResult(tuple(cases), tuple(candidate_status))
-
-
-def _candidate_query(candidate: TraceCandidate) -> Any:
-    if candidate.query_type == "pair":
-        return PairSliceQuery(*candidate.query_raw_ids)
-    return AnchorNeighborhoodQuery(candidate.query_raw_ids[0])
 
 
 def motion_v2_row(case: CommitCenteredCase) -> dict[str, Any]:
