@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.pytest-*/
 .ruff_cache/
 .mypy_cache/
 build/
@@ -12,6 +13,7 @@ dist/
 artifacts/*
 !artifacts/README.md
 *.log
+.tmp/
 
 # Local data and environment
 .env
