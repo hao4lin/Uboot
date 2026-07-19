@@ -98,3 +98,23 @@ python experiments/baseline_adaptive_relation_trace.py `
   --exclude-trivial-source-sibling-support `
   --output-dir "artifacts/baseline_adaptive_relation_trace_N100_v2"
 ```
+
+## Radius-one support graph review v3
+
+V3 replays only the previously retained 101 v1 strong rows and 60 v2 strong
+rows, builds role-aware support motifs, and compares them with deterministic
+same-state controls:
+
+```powershell
+python experiments/review_support_graphs_v3.py `
+  --v1-dir "artifacts/baseline_adaptive_relation_trace_N100_final" `
+  --v2-dir "artifacts/baseline_adaptive_relation_trace_N100_v2_final2" `
+  --N 100 `
+  --seed 20260712 `
+  --sweeps 10000 `
+  --checkpoint-sweeps 0,100,300,1000,3000,10000 `
+  --replay-missing-context `
+  --max-local-radius 1 `
+  --require-primary-role-participation `
+  --output-dir "artifacts/baseline_adaptive_relation_trace_N100_v3_review"
+```
