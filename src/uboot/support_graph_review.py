@@ -186,6 +186,9 @@ def generate_background_controls(
     indegree = _indegrees(network)
     old_degree = indegree[real_old]
     new_degree = indegree[real_new]
+    real_local_size = len(
+        _radius_one_nodes(network, {real_source, real_old, real_new})
+    )
     candidates = []
     for source in range(network.size):
         if source == real_source:
@@ -198,11 +201,17 @@ def generate_background_controls(
             distance = abs(indegree[old] - old_degree) + abs(
                 indegree[new] - new_degree
             )
-            candidates.append((distance, source, old, new))
+            local_size = len(_radius_one_nodes(network, {source, old, new}))
+            candidates.append(
+                (distance, abs(local_size - real_local_size), source, old, new)
+            )
     rng = Random(seed)
     rng.shuffle(candidates)
     candidates.sort(key=lambda item: item[0])
-    return tuple((source, old, new) for _, source, old, new in candidates[:count])
+    return tuple(
+        (source, old, new)
+        for _, _, source, old, new in candidates[:count]
+    )
 
 
 def graph_payload(reviewed: ReviewedSupport) -> dict[str, Any]:
