@@ -21,7 +21,7 @@ def load_trace_candidates(
     candidate_count: int,
     seed: int,
 ) -> tuple[TraceCandidate, ...]:
-    """Select at most five rows from each requested evidence stratum."""
+    """Select a deterministic, balanced sample across four evidence strata."""
     source = candidate_source.resolve()
     if source.is_dir():
         source = source / "slice_transformations_diagnostic_sample.csv"
@@ -53,13 +53,23 @@ def load_trace_candidates(
     rows = list(unique.values())
     selected: list[tuple[str, dict[str, str], tuple[int, ...], str]] = []
     used: set[tuple[str, str]] = set()
+    group_order = (
+        "T3_SAME_RAW_PAIR",
+        "NONTRACKED_RAW_REPEATED",
+        "TRACKED_ANCHOR_NEIGHBOR_CHANGE",
+        "ONE_MEMBER_ONLY_CONTROL",
+    )
+    base, remainder = divmod(candidate_count, len(group_order))
+    group_limits = {
+        group: base + (index < remainder)
+        for index, group in enumerate(group_order)
+    }
 
     def add_group(
         group: str,
         candidates: Iterable[dict[str, str]],
         query_builder: Any,
         *,
-        limit: int = 5,
         preserve_order: bool = False,
     ) -> None:
         available = [row for row in candidates if _key(row) not in used]
@@ -71,7 +81,7 @@ def load_trace_candidates(
             )
             < 2
         )
-        for row in available[:limit]:
+        for row in available[: group_limits[group]]:
             query_ids, query_type = query_builder(row)
             selected.append((group, row, query_ids, query_type))
             used.add(_key(row))

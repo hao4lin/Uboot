@@ -75,3 +75,26 @@ exactly replayable recording. Full RNG/network checkpoints and a compact update
 impact index support pure on-demand pair, radius-one anchor, and three-member
 slices. Non-monotone interval refinement inspects relevant commits even when
 coarse endpoints match, and resource exhaustion is always explicit.
+
+# Commit-centered deterministic relation trace v2
+
+The v2 tracer first locates primary changes from the impact index and then emits
+bounded commit-centered support diagnostics. A formal N=100 run is:
+
+```powershell
+python experiments/baseline_adaptive_relation_trace.py `
+  --mode commit-centered-v2 `
+  --N 100 `
+  --seed 20260712 `
+  --sweeps 10000 `
+  --checkpoint-sweeps 0,100,300,1000,3000,10000 `
+  --candidate-source "artifacts/baseline_relation_transform_N100_K3_final3/slice_transformations_diagnostic_sample.csv" `
+  --candidate-count 12 `
+  --max-primary-commits-per-candidate 5 `
+  --local-window-atoms 8,32,128 `
+  --max-support-candidates-per-commit 32 `
+  --max-support-boundary-probes 128 `
+  --impact-index all-commits `
+  --exclude-trivial-source-sibling-support `
+  --output-dir "artifacts/baseline_adaptive_relation_trace_N100_v2"
+```

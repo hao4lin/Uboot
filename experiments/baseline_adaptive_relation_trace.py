@@ -26,6 +26,12 @@ from uboot.adaptive_relation_tracer import (
     trace_interval,
 )
 from uboot.adaptive_trace_candidates import load_trace_candidates
+from uboot.commit_centered_relation_trace import (
+    motion_v2_row,
+    primary_row,
+    report_v2,
+    trace_commit_centered,
+)
 from uboot.deterministic_replay import (
     IMPACT_INDEX_MODES,
     ReplayOracle,
@@ -34,6 +40,10 @@ from uboot.deterministic_replay import (
 )
 from uboot.kernel import SLOT_COUNT
 from uboot.minimal_edge_experiment import network_hash, run_baseline_reference
+from uboot.motion_reclassification import (
+    reclassify_existing_motion_candidates,
+    write_reclassified_csv,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +51,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--mode",
+        choices=("interval-v1", "commit-centered-v2"),
+        default="interval-v1",
+    )
     parser.add_argument("--N", type=int, default=100, dest="size")
     parser.add_argument("--seed", type=int, default=20260712)
     parser.add_argument("--sweeps", type=int, required=True)
@@ -54,6 +69,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-replay-atoms-per-candidate", type=int, default=50_000_000
     )
+    parser.add_argument("--max-primary-commits-per-candidate", type=int, default=5)
+    parser.add_argument("--local-window-atoms", default="8,32,128")
+    parser.add_argument("--max-support-candidates-per-commit", type=int, default=32)
+    parser.add_argument("--max-support-boundary-probes", type=int, default=128)
+    parser.add_argument("--max-total-replay-atoms", type=int, default=50_000_000)
+    parser.add_argument("--exclude-trivial-source-sibling-support", action="store_true")
+    parser.add_argument(
+        "--reclassify-input-dir",
+        type=Path,
+        default=ROOT / "artifacts" / "baseline_adaptive_relation_trace_N100_final",
+    )
     parser.add_argument("--impact-index", choices=IMPACT_INDEX_MODES, default="all-commits")
     parser.add_argument("--output-dir", type=Path, required=True)
     return parser.parse_args()
@@ -65,6 +91,17 @@ def main() -> None:
         raise SystemExit("N must exceed the three-slot count")
     if args.sweeps < 0 or args.candidate_count < 1:
         raise SystemExit("sweeps must be nonnegative and candidate count positive")
+    if args.mode == "commit-centered-v2":
+        positive_limits = (
+            args.max_primary_commits_per_candidate,
+            args.max_support_candidates_per_commit,
+            args.max_support_boundary_probes,
+            args.max_total_replay_atoms,
+        )
+        if any(value < 1 for value in positive_limits):
+            raise SystemExit("v2 resource limits must be positive")
+        if args.impact_index == "none":
+            raise SystemExit("commit-centered-v2 requires an impact index")
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
     started = time.monotonic()
@@ -95,7 +132,30 @@ def main() -> None:
             progress=reporter.build,
         )
         reporter.phase("tracing candidates", 50)
-        traced = _trace_candidates(args, oracle, candidates, reporter)
+        if args.mode == "commit-centered-v2":
+            windows = tuple(
+                sorted(
+                    {
+                        int(value.strip())
+                        for value in args.local_window_atoms.split(",")
+                        if value.strip()
+                    }
+                )
+            )
+            if not windows or any(value < 1 for value in windows):
+                raise SystemExit("local windows must contain positive atom counts")
+            traced = trace_commit_centered(
+                oracle,
+                candidates,
+                max_primary_commits_per_candidate=args.max_primary_commits_per_candidate,
+                local_windows=windows,
+                max_support_candidates_per_commit=args.max_support_candidates_per_commit,
+                max_support_boundary_probes=args.max_support_boundary_probes,
+                max_total_replay_atoms=args.max_total_replay_atoms,
+                progress=reporter.trace,
+            )
+        else:
+            traced = _trace_candidates(args, oracle, candidates, reporter)
         reporter.phase("verifying direct baseline", 92)
         direct_network, direct_rng = run_baseline_reference(
             size=args.size,
@@ -123,15 +183,26 @@ def main() -> None:
         ):
             raise RuntimeError("replay trajectory diverged from direct baseline")
         reporter.phase("writing outputs", 98)
-        _write_outputs(
-            output,
-            args,
-            oracle,
-            candidates,
-            traced,
-            verification,
-            time.monotonic() - started,
-        )
+        if args.mode == "commit-centered-v2":
+            _write_v2_outputs(
+                output,
+                args,
+                oracle,
+                candidates,
+                traced,
+                verification,
+                time.monotonic() - started,
+            )
+        else:
+            _write_outputs(
+                output,
+                args,
+                oracle,
+                candidates,
+                traced,
+                verification,
+                time.monotonic() - started,
+            )
         reporter.phase("complete", 100)
     except BaseException:
         print(f"incomplete output retained at {output}", file=sys.stderr)
@@ -319,6 +390,116 @@ def _write_outputs(
     }
     (output / "trace_report.md").write_text(
         _report(summary, results), encoding="utf-8"
+    )
+
+
+def _write_v2_outputs(
+    output: Path,
+    args: argparse.Namespace,
+    oracle: ReplayOracle,
+    candidates: tuple[TraceCandidate, ...],
+    traced: Any,
+    verification: dict[str, Any],
+    runtime_seconds: float,
+) -> None:
+    fingerprint = asdict(oracle.fingerprint)
+    fingerprint["fingerprint_hash"] = oracle.fingerprint.fingerprint_hash
+    (output / "run_fingerprint.json").write_text(
+        json.dumps(fingerprint, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    (output / "checkpoint_manifest.json").write_text(
+        json.dumps(
+            {
+                "fingerprint_hash": oracle.fingerprint.fingerprint_hash,
+                "checkpoints": checkpoint_manifest_rows(oracle),
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    _write_csv(
+        output / "trace_candidates.csv",
+        (
+            {
+                **asdict(candidate),
+                "involved_raw_ids": _join(candidate.involved_raw_ids),
+                "query_raw_ids": _join(candidate.query_raw_ids),
+                "coarse_locators": _join(candidate.coarse_locators),
+            }
+            for candidate in candidates
+        ),
+    )
+    _write_csv(
+        output / "primary_change_commits.csv",
+        (primary_row(case.primary) for case in traced.cases),
+        (
+            "candidate_id",
+            "commit_locator",
+            "source_raw_id",
+            "slot_semantic",
+            "old_target",
+            "new_target",
+            "primary_change_type",
+            "source_artifact",
+        ),
+    )
+    with (output / "commit_centered_slice_bundles.jsonl").open(
+        "w", encoding="utf-8", newline="\n"
+    ) as handle:
+        for case in traced.cases:
+            handle.write(
+                json.dumps(case.bundle, sort_keys=True, separators=(",", ":")) + "\n"
+            )
+    _write_csv(
+        output / "support_candidates.csv",
+        (row for case in traced.cases for row in case.support_candidates),
+        (
+            "candidate_id",
+            "primary_commit_locator",
+            "third_raw_id",
+            "candidate_groups",
+            "source_sibling_only",
+        ),
+    )
+    _write_csv(
+        output / "support_change_commits.csv",
+        (row for case in traced.cases for row in case.support_changes),
+        (
+            "candidate_id",
+            "primary_commit_locator",
+            "support_commit_locator",
+            "support_relation_before",
+            "support_relation_after",
+            "shared_raw_members",
+            "role_mapping",
+            "distance_in_locator",
+        ),
+    )
+    _write_csv(
+        output / "motion_candidates_v2.csv",
+        (motion_v2_row(case) for case in traced.cases),
+    )
+
+    old_root = args.reclassify_input_dir.resolve()
+    old_rows: tuple[dict[str, Any], ...] = ()
+    required = (
+        old_root / "motion_candidates.csv",
+        old_root / "localized_commits.csv",
+        old_root / "generated_three_member_slices.csv",
+    )
+    if all(path.exists() for path in required):
+        old_rows = reclassify_existing_motion_candidates(*required)
+    write_reclassified_csv(output / "motion_candidates_reclassified.csv", old_rows)
+    old_counts = Counter(row["v2_reclassification"] for row in old_rows)
+    (output / "adaptive_trace_v2_report.md").write_text(
+        report_v2(
+            traced,
+            verification=verification,
+            old_reclassification_counts=old_counts,
+            runtime_seconds=runtime_seconds,
+        ),
+        encoding="utf-8",
     )
 
 
